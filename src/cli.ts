@@ -2248,8 +2248,8 @@ export const FULL_HELP = `
   Proxy options:
     --model=MODEL            Force a model for all requests
                              Shortcuts: fable, fable1m, opus, sonnet, haiku
-                             Full IDs: claude-fable-5, claude-opus-5-5,
-                             claude-sonnet-5 (append [1m] for 1M context)
+                             Full IDs: claude-fable-5-2, claude-opus-5-5,
+                             claude-sonnet-5-5 (append [1m] for 1M context)
                              Provider prefix: openai:gpt-4o, groq:llama-3.3-70b,
                              claude:opus, local:qwen-coder (forces backend)
                              Default: passthrough (client decides)

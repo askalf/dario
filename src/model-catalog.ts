@@ -39,14 +39,18 @@ const OAUTH_BETA = 'oauth-2025-04-20';
  * — the same ordering normalizeUpstreamIds() produces for live data.
  */
 export const BAKED_BASE_MODELS: readonly string[] = [
+  'claude-fable-5-2',
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-5-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
 ];
 

@@ -127,11 +127,11 @@ header('the reservation prices the model the request is billed as (dario#1378)')
 {
   const cell = { requests: 1, inputTokens: 0, outputTokens: 1_000, cacheReadTokens: 0, cacheCreateTokens: 30_000 };
   const plain = { modelOverride: null, fastModelOverride: null, cliProviderOverride: null, cliModelRaw: null, isOpenAI: false };
-  check('a short name resolves: fable', budgetModelsFor('fable', plain).includes('claude-fable-5'), budgetModelsFor('fable', plain));
+  check('a short name resolves: fable', budgetModelsFor('fable', plain).includes('claude-fable-5-2'), budgetModelsFor('fable', plain));
   check('…opus', budgetModelsFor('opus', plain).every((m) => m.startsWith('claude-opus-')), budgetModelsFor('opus', plain));
-  check('a claude: prefix and an effort suffix resolve too', budgetModelsFor('claude:fable:high', plain).includes('claude-fable-5'), budgetModelsFor('claude:fable:high', plain));
+  check('a claude: prefix and an effort suffix resolve too', budgetModelsFor('claude:fable:high', plain).includes('claude-fable-5-2'), budgetModelsFor('claude:fable:high', plain));
   check('a full id stays itself', JSON.stringify(budgetModelsFor('claude-sonnet-5', plain)) === '["claude-sonnet-5"]', budgetModelsFor('claude-sonnet-5', plain));
-  check('an operator alias is followed', budgetModelsFor('cheap', { ...plain, modelAliases: { cheap: 'claude:fable' } }).includes('claude-fable-5'));
+  check('an operator alias is followed', budgetModelsFor('cheap', { ...plain, modelAliases: { cheap: 'claude:fable' } }).includes('claude-fable-5-2'));
   const forced = { ...plain, modelOverride: 'claude-opus-5-5' };
   check('a --model override is a candidate beside the client model', budgetModelsFor('claude-haiku-4-5', forced).includes('claude-opus-5-5'), budgetModelsFor('claude-haiku-4-5', forced));
   check('…and --fast-model on a haiku request', budgetModelsFor('claude-haiku-4-5', { ...forced, fastModelOverride: 'claude-sonnet-5' }).includes('claude-sonnet-5'));
@@ -140,11 +140,11 @@ header('the reservation prices the model the request is billed as (dario#1378)')
   check('the chat shape\'s OpenAI-name map is a candidate', budgetModelsFor('gpt-4', { ...plain, isOpenAI: true }).includes('claude-opus-4-6'));
   check('a __proto__ model name is just an unknown name', budgetModelsFor('__proto__', { ...plain, isOpenAI: true }).every((m) => typeof m === 'string'));
 
-  const fable = costOfTokens('claude-fable-5', NOW, cell);
+  const fable = costOfTokens('claude-fable-5-2', NOW, cell);
   const fallback = costOfTokens('fable', NOW, cell);
-  check('priced as written, `fable` fell back to a third of fable\'s rate', fallback < fable / 3 + 1e-9, JSON.stringify({ fallback, fable }));
+  check('priced as written, `fable` fell back to under half of fable\'s rate', fallback < fable / 2, JSON.stringify({ fallback, fable }));
   const r = requestBudgetReservation(budgetModelsFor('fable', plain), 90_000, 1_000, costOfTokensFailClosed, NOW);
-  const want = requestBudgetReservation('claude-fable-5', 90_000, 1_000, costOfTokens, NOW);
+  const want = requestBudgetReservation('claude-fable-5-2', 90_000, 1_000, costOfTokens, NOW);
   check('resolved, `fable` reserves at fable\'s rate', Math.abs(r.usd - want.usd) < 1e-12, JSON.stringify({ r, want }));
   const o = requestBudgetReservation(budgetModelsFor('claude-haiku-4-5', forced), 90_000, 1_000, costOfTokensFailClosed, NOW);
   const wantO = requestBudgetReservation('claude-opus-5-5', 90_000, 1_000, costOfTokens, NOW);

@@ -3,7 +3,8 @@
  * Pricing drift watcher.
  *
  * Diffs dario's PRICING table (src/analytics.ts) against Anthropic's published
- * model-pricing table and reports any rate that has moved.
+ * model-pricing table and reports any rate that has moved, and any published
+ * model PRICING has no row for.
  *
  * WHY THIS EXISTS (#1048). PRICING encodes external facts with no natural
  * expiry. An entry is correct when written, has a passing test, and then goes
@@ -105,13 +106,35 @@ const OPENAI_COLUMNS = {
 const MIN_PUBLISHED_ROWS = 8;
 
 /**
+ * The prompt-length qualifier a model cell carries when the model is priced
+ * by prompt length (Claude Haiku 5.5, live 2026-11-09): "(for prompts up to
+ * 100,000 tokens)" on the row every request starts in, "(for prompts over
+ * 100,000 tokens)" on the row a longer one pays. Returns { kind, tokens } or
+ * null. Any other parenthetical is left in the cell, so the id it produces
+ * matches nothing dario prices and is reported, not read as some model's rate.
+ */
+const PROMPT_TIER = /\(\s*for prompts (up to|over) ([0-9][0-9,]*) tokens\s*\)/i;
+export function promptTierFromDisplayName(cell) {
+  const m = PROMPT_TIER.exec(String(cell));
+  if (!m) return null;
+  return { kind: m[1].toLowerCase() === 'over' ? 'over' : 'upTo', tokens: Number(m[2].replace(/,/g, '')) };
+}
+
+/** True when the model cell marks the model retired ("Claude Opus 4.1 ([retired, …](…))"). */
+export function isRetiredDisplayName(cell) {
+  return /\bretired\b/i.test(String(cell));
+}
+
+/**
  * "Claude Opus 4.8" -> "claude-opus-4-8". Strips the trailing markdown link
- * some rows carry ("Claude Opus 4.1 ([retired, …](…))") before normalizing.
+ * some rows carry ("Claude Opus 4.1 ([retired, …](…))") and the prompt-length
+ * qualifier (promptTierFromDisplayName) before normalizing.
  */
 export function modelIdFromDisplayName(cell) {
   const name = String(cell)
     .replace(/\(\[[^\]]*\]\([^)]*\)\)/g, '')  // ([text](url))
     .replace(/\[[^\]]*\]\([^)]*\)/g, '')      // [text](url)
+    .replace(PROMPT_TIER, '')
     .replace(/\*+/g, '')
     .trim();
   if (!/^claude /i.test(name)) return null;
@@ -134,10 +157,20 @@ export function priceFromCell(cell) {
 
 /**
  * Pure parse of the published markdown into { modelId: {input, output,
- * cacheRead, cacheCreate} }. Throws on anything that would make a silent
- * wrong answer possible — the caller turns that into exit 2.
+ * cacheRead, cacheCreate} }. A model priced by prompt length also carries
+ * `longPrompt: { over, input, output, cacheRead, cacheCreate }`, read from
+ * its second row. Throws on anything that would make a silent wrong answer
+ * possible — the caller turns that into exit 2.
  */
 export function parsePricingTable(markdown) {
+  return parsePricingRows(markdown).rates;
+}
+
+/**
+ * parsePricingTable's rates, plus `retired`: the ids whose row is marked
+ * retired. Those are the published models dario is not expected to price.
+ */
+export function parsePricingRows(markdown) {
   const lines = String(markdown).split('\n');
 
   // The model table is the first one carrying every column we need. Scanning
@@ -168,10 +201,14 @@ export function parsePricingTable(markdown) {
   }
 
   const rates = {};
+  const longRows = {};  // id -> { over, ...rate }, joined to its model below
+  const upTo = {};      // id -> the threshold its first row names
+  const retired = new Set();
+  let sawRow = false;
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line.includes('|')) {
-      if (Object.keys(rates).length > 0) break;  // table ended
+      if (sawRow) break;  // table ended
       continue;
     }
     if (/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) continue;  // separator row
@@ -185,7 +222,29 @@ export function parsePricingTable(markdown) {
       if (v === null) { ok = false; break; }
       rate[field] = v;
     }
-    if (ok) rates[id] = rate;
+    if (!ok) continue;
+    sawRow = true;
+    if (isRetiredDisplayName(cells[1])) retired.add(id);
+    const tier = promptTierFromDisplayName(cells[1]);
+    if (tier?.kind === 'over') {
+      // A second "over" row for one model would be a third price dario has no
+      // place for. Refuse it; keeping either one would be a guess.
+      if (longRows[id]) throw new Error(`${id} has more than one "for prompts over" row: the published table shape has changed`);
+      longRows[id] = { over: tier.tokens, ...rate };
+      continue;
+    }
+    if (tier) upTo[id] = tier.tokens;
+    rates[id] = rate;
+  }
+  // The two rows of a model priced by prompt length must be one pair: the
+  // same threshold on both, and a first row for the second to extend.
+  for (const [id, long] of Object.entries(longRows)) {
+    if (!rates[id]) throw new Error(`${id} has a "for prompts over" row and no row for shorter prompts: the published table shape has changed`);
+    if (upTo[id] !== long.over) throw new Error(`${id} is priced up to ${upTo[id]} tokens and over ${long.over}: the two rows do not meet`);
+    rates[id].longPrompt = long;
+  }
+  for (const id of Object.keys(upTo)) {
+    if (!longRows[id]) throw new Error(`${id} has a "for prompts up to" row and no row for longer prompts: the published table shape has changed`);
   }
 
   if (Object.keys(rates).length < MIN_PUBLISHED_ROWS) {
@@ -194,7 +253,7 @@ export function parsePricingTable(markdown) {
       '— refusing to report "aligned" from a parse this thin',
     );
   }
-  return rates;
+  return { rates, retired };
 }
 
 /** "$12.50" -> 12.5; "-" -> null (no price in that cell); anything else -> undefined. */
@@ -304,11 +363,11 @@ export function parseOpenAiPricingTable(markdown) {
 }
 
 /**
- * Compare dario's table against the published one. Only models dario actually
- * prices are checked; the published table listing models dario does not model
- * is not drift. A model dario prices that has VANISHED upstream is reported —
- * it usually means a rename, and a stale key silently falls through to the
- * unknown-model fallback rate.
+ * Compare dario's table against the published one, walking dario's rows. A
+ * model dario prices that has VANISHED upstream is reported — it usually
+ * means a rename, and a stale key silently falls through to the unknown-model
+ * fallback rate. The other direction, a published model dario has no row for,
+ * is unpricedPublishedModels.
  */
 export function diffPricing(ours, published) {
   const drift = [];
@@ -325,16 +384,59 @@ export function diffPricing(ours, published) {
         drift.push({ model: id, field, ours: mine[field], published: theirs[field] });
       }
     }
+    // The long-prompt row, where either side has one. A row only one side
+    // carries is drift in both directions: ours alone prices long requests at
+    // a rate nobody publishes, theirs alone leaves them at the short rate.
+    if (mine.longPrompt && !theirs.longPrompt) {
+      drift.push({ model: id, field: 'longPrompt', ours: 'priced', published: 'absent',
+        note: 'no "for prompts over" row in the published table: the model is no longer priced by prompt length' });
+    } else if (!mine.longPrompt && theirs.longPrompt) {
+      drift.push({ model: id, field: 'longPrompt', ours: 'absent', published: `over ${theirs.longPrompt.over} tokens`,
+        note: 'the published table prices this model by prompt length: add its longPrompt row' });
+    } else if (mine.longPrompt && theirs.longPrompt) {
+      for (const field of ['over', 'input', 'output', 'cacheRead', 'cacheCreate']) {
+        if (mine.longPrompt[field] !== theirs.longPrompt[field]) {
+          drift.push({ model: id, field: `longPrompt.${field}`, ours: mine.longPrompt[field], published: theirs.longPrompt[field] });
+        }
+      }
+    }
   }
   return drift.sort((a, b) => a.model.localeCompare(b.model) || a.field.localeCompare(b.field));
 }
 
-/** The four rate fields, from an entry or from an `intro` block. */
-function comparable(rate) {
+/**
+ * Published models dario has no row for.
+ *
+ * diffPricing walks dario's table, so a model the page gained is invisible to
+ * it, and an unpriced model does not fail: it is costed at the sonnet-4-6
+ * fallback with nothing in the output to say so. By 2026-11-09 four models
+ * had shipped that way (Fable 5.1 and 5.2, Sonnet 5.5, Haiku 5.5), Haiku 5.5
+ * at thirty times its price, and this watcher reported "aligned" every day.
+ *
+ * Every row on the page is expected in PRICING except the ones the page marks
+ * retired, which the API no longer serves.
+ */
+export function unpricedPublishedModels(ours, published, retired = new Set()) {
+  return Object.keys(published)
+    .filter((id) => !Object.hasOwn(ours, id) && !retired.has(id))
+    .sort()
+    .map((id) => ({ model: id, field: '*', ours: 'unpriced', published: 'listed',
+      note: 'in the published table with no row in PRICING: requests for it are costed at the unknown-model fallback rate' }));
+}
+
+/** The four rate fields, from an entry, an `intro` block or a `longPrompt` row. */
+function rateOf(rate) {
   return {
     input: rate.input, output: rate.output,
     cacheRead: rate.cacheRead, cacheCreate: rate.cacheCreate,
   };
+}
+
+/** What diffPricing compares of one of dario's entries: its rate and, where it has one, its long-prompt row. */
+function comparable(entry) {
+  return entry.longPrompt
+    ? { ...rateOf(entry), longPrompt: { over: entry.longPrompt.over, ...rateOf(entry.longPrompt) } }
+    : rateOf(entry);
 }
 
 /**
@@ -395,16 +497,17 @@ async function fetchMarkdown(url) {
  * Network failure and an unparseable page are NOT drift — they are "could
  * not determine", and never a quiet "aligned".
  */
-async function checkProvider(name, { source, humanSource, table, parse, extraDrift }) {
+async function checkProvider(name, { source, humanSource, table, parse, extraDrift, everyPublishedModel = false }) {
   const out = { provider: name, source: humanSource, modelsChecked: Object.keys(table).length };
   let markdown;
   try { markdown = await fetchMarkdown(source); }
   catch (err) { return { ...out, status: 'infra_error', kind: 'fetch', error: `could not fetch published pricing: ${err.message}` }; }
-  let published;
-  try { published = parse(markdown); }
+  let published, retired;
+  try { ({ rates: published, retired } = parse(markdown)); }
   catch (err) { return { ...out, status: 'infra_error', kind: 'parse', error: `could not parse published pricing: ${err.message}` }; }
   const ours = Object.fromEntries(Object.entries(table).map(([id, e]) => [id, comparable(e)]));
-  const drift = [...diffPricing(ours, published), ...(extraDrift ?? [])].map((d) => ({ provider: name, ...d }));
+  const unpriced = everyPublishedModel ? unpricedPublishedModels(ours, published, retired) : [];
+  const drift = [...diffPricing(ours, published), ...unpriced, ...(extraDrift ?? [])].map((d) => ({ provider: name, ...d }));
   return { ...out, modelsPublished: Object.keys(published).length, drift, status: drift.length === 0 ? 'clean' : 'drift' };
 }
 
@@ -428,8 +531,8 @@ async function main() {
   // A rate that no longer matches, and a promotional window that has lapsed,
   // are both "PRICING no longer describes reality" — one report, one exit code.
   const providers = [
-    await checkProvider('anthropic', { source: SOURCE, humanSource: HUMAN_SOURCE, table: PRICING, parse: parsePricingTable, extraDrift: staleIntroWindows(PRICING, Date.now()) }),
-    await checkProvider('openai', { source: OPENAI_SOURCE, humanSource: OPENAI_HUMAN_SOURCE, table: OPENAI_PRICING, parse: parseOpenAiPricingTable }),
+    await checkProvider('anthropic', { source: SOURCE, humanSource: HUMAN_SOURCE, table: PRICING, parse: parsePricingRows, extraDrift: staleIntroWindows(PRICING, Date.now()), everyPublishedModel: true }),
+    await checkProvider('openai', { source: OPENAI_SOURCE, humanSource: OPENAI_HUMAN_SOURCE, table: OPENAI_PRICING, parse: (markdown) => ({ rates: parseOpenAiPricingTable(markdown), retired: new Set() }) }),
   ];
   const drift = providers.flatMap((p) => p.drift ?? []);
   const undetermined = providers.filter((p) => p.status === 'infra_error');

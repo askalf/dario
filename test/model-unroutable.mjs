@@ -85,7 +85,7 @@ await writeFile(join(tmpHome, '.dario', 'codex-accounts', 'live.json'), JSON.str
 const { startProxy } = await import('../dist/proxy.js');
 
 // ── fake Anthropic: a catalog, a 200 for known models, Anthropic's own 404 otherwise ──
-const CATALOG = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-opus-4-8'];
+const CATALOG = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-opus-4-8'];
 const anthropic = { calls: 0, models: [] };
 const fakeFetch = async (url, init) => {
   const target = String(url);
@@ -173,7 +173,7 @@ header('still served: every servable spelling reaches the pool as the right id')
     ['claude:opus', 'claude-opus-5-5'],
     // `[1m]` is a client-side label: the Claude path strips it and rides the
     // context-1m beta instead, so the pool sees the base id.
-    ['claude:sonnet1m', 'claude-sonnet-5'],
+    ['claude:sonnet1m', 'claude-sonnet-5-5'],
     ['anthropic:claude-opus-4-8', 'claude-opus-4-8'],
     ['claude-opus-4-8-20260101', 'claude-opus-4-8-20260101'],
     ['my-fast', 'claude-haiku-4-5'],

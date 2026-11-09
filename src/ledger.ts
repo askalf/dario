@@ -9,7 +9,9 @@
  * count and the four token buckets. It never stores a price. Rows are priced
  * at read time through `costOfTokens` at the day's own timestamp, so a
  * pricing correction (#1047, #1048 — both happened) reprices history instead
- * of freezing the wrong number in.
+ * of freezing the wrong number in. The one price that depends on a single
+ * request, a model's long-prompt row, is kept by filing those requests under
+ * the model's `[long]` key (analytics' pricingModelForRequest).
  *
  * Two buckets per row. `covered` is traffic a subscription paid for — the
  * API-equivalent cost of that is the headline, the invoice that never
@@ -30,7 +32,7 @@ import { readFile, mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { durableWriteFile } from './durable-write.js';
-import { billingBucketFromClaim, costOfTokens, providerOfModel, type PricingProvider, type RequestRecord } from './analytics.js';
+import { billingBucketFromClaim, costOfTokens, pricingModelForRequest, providerOfModel, type PricingProvider, type RequestRecord } from './analytics.js';
 
 export const LEDGER_VERSION = 1;
 /** The default proxy port; any other port gets its own ledger file. */
@@ -275,7 +277,10 @@ export function addToLedger(file: LedgerFile, record: RequestRecord): boolean {
   const bucket = ledgerBucketFor(record);
   if (!bucket) return false;
   const day = dayKey(record.timestamp);
-  const model = record.model || 'unknown';
+  // A model priced by prompt length keeps its long-prompt requests in a row of
+  // their own (`claude-haiku-5-5[long]`): a row is a day's sum, and the sum
+  // cannot say which of its requests were over the threshold.
+  const model = pricingModelForRequest(record.model || 'unknown', record);
   const models = (file.days[day] ??= {});
   addCell((models[model] ??= {}), bucket, record);
   if (record.consumer) {
