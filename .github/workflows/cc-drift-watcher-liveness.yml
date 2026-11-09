@@ -55,7 +55,7 @@ jobs:
       # repo (otherwise `gh issue list` exits with "fatal: not a git
       # repository"). actions/checkout supplies it; we don't actually
       # need any files from the checkout, just the .git directory.
-      - uses: askalf/ci/actions/checkout-with-retry@669bb7eba67e7015586f54fb7959ae3071127a72 # main 2026-11-09, askalf/ci#190
+      - uses: askalf/ci/actions/checkout-with-retry@6479de99a4bf3897d3c09efc7b3d6f24721bf30e # main 2026-11-09, askalf/ci#194
         with:
           fetch-depth: 1
 
@@ -251,7 +251,7 @@ jobs:
       - name: Report
         if: steps.check.outputs.report == 'issue' || steps.check.outputs.report == 'close'
         continue-on-error: ${{ steps.check.outputs.report == 'close' }}
-        uses: askalf/ci/actions/drift-report@669bb7eba67e7015586f54fb7959ae3071127a72 # main 2026-11-09, askalf/ci#190
+        uses: askalf/ci/actions/drift-report@6479de99a4bf3897d3c09efc7b3d6f24721bf30e # main 2026-11-09, askalf/ci#194
         with:
           label: cc-watcher-liveness
           label-color: B60205
