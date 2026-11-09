@@ -163,6 +163,21 @@ header('chatCompletionsToResponses');
   check('tool type stays function', out.tools[0].type === 'function');
   check('tool parameters preserved', out.tools[0].parameters.properties.city.type === 'string');
   check('tool_choice forwarded', out.tool_choice === 'auto');
+  check('a tool with no strict goes out as strict: false, not left to the backend (dario#1836)', out.tools[0].strict === false);
+}
+{
+  // dario#1836: chat/completions tools are not strict unless they say so. Dropping the field left
+  // it to the Responses default, and a schema's optional parameters came back as required ones.
+  const schema = { type: 'object', properties: { prompt: { type: 'string' }, isolation: { type: 'string', enum: ['worktree'] } }, required: ['prompt'] };
+  const strictOf = (fn) => chatCompletionsToResponses({ model: 'm', messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'function', function: { name: 'Agent', parameters: schema, ...fn } }] }).tools[0];
+  check('strict: false is kept', strictOf({ strict: false }).strict === false);
+  check('strict: true is kept', strictOf({ strict: true }).strict === true);
+  check('strict: null reads as not strict', strictOf({ strict: null }).strict === false);
+  check('a strict that is not a boolean reads as not strict', strictOf({ strict: 'yes' }).strict === false && strictOf({ strict: 1 }).strict === false);
+  const t = strictOf({});
+  check('the schema goes out as the client wrote it: the optional parameter is still optional', JSON.stringify(t.parameters) === JSON.stringify(schema) && !t.parameters.required.includes('isolation'));
+  const none = chatCompletionsToResponses({ model: 'm', messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'function' }] }).tools[0];
+  check('a tool entry with no function body still states it', none.strict === false && none.name === '');
 }
 {
   // A forced tool: chat/completions nests the name under function{}, Responses
@@ -603,6 +618,24 @@ header('forwardToCodex — Anthropic shape, request translation');
   check('anthropic tool input_schema → Responses parameters',
     sent.body.tools[0].type === 'function' && sent.body.tools[0].name === 'get_weather' &&
     sent.body.tools[0].parameters !== undefined && sent.body.tools[0].function === undefined);
+  check('an Anthropic tool with no strict goes out as strict: false (dario#1836)', sent.body.tools[0].strict === false);
+}
+{
+  // Anthropic's strict allows optional properties and the Responses one does not, so a tool that
+  // asks for strict goes out without the field, as it did before.
+  const sent = {};
+  const body = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }],
+    tools: [
+      { name: 'strict_tool', strict: true, input_schema: { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } }, required: ['a'], additionalProperties: false } },
+      { name: 'loose_tool', strict: false, input_schema: { type: 'object', properties: { a: { type: 'string' } } } },
+    ],
+  }));
+  await forwardToCodex({}, fakeRes(), body, CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent));
+  const [strictTool, looseTool] = sent.body.tools;
+  check('strict: true on an Anthropic tool is not sent as the Responses strict', strictTool.name === 'strict_tool' && !('strict' in strictTool));
+  check('…and its schema is untouched', JSON.stringify(strictTool.parameters.required) === '["a"]');
+  check('strict: false on an Anthropic tool goes out as strict: false', looseTool.strict === false);
 }
 
 header('forwardToCodex — Anthropic shape, non-streaming collapse');
