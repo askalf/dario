@@ -233,6 +233,15 @@ export function parsePricingRows(markdown) {
       longRows[id] = { over: tier.tokens, ...rate };
       continue;
     }
+    // One row per model, plus its "over" row. A second "up to" row is a middle
+    // tier: three prices where dario holds two, and keeping the last would
+    // pair with the "over" row and read as aligned with a whole tier dropped.
+    // A model listed twice outright is two prices with nothing to choose by.
+    if (Object.hasOwn(rates, id)) {
+      throw new Error(tier
+        ? `${id} has more than one "for prompts up to" row: the published table shape has changed`
+        : `${id} is listed more than once: the published table shape has changed`);
+    }
     if (tier) upTo[id] = tier.tokens;
     rates[id] = rate;
   }
