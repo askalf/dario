@@ -13,7 +13,8 @@
 // awkward parts: markdown links inside model cells, $0.50 and $12.50 cells,
 // and a retired model dario does not price.
 
-import { parsePricingTable, priceFromCell, modelIdFromDisplayName, diffPricing, staleIntroWindows, headerKey,
+import { parsePricingTable, parsePricingRows, priceFromCell, modelIdFromDisplayName, promptTierFromDisplayName, isRetiredDisplayName,
+  diffPricing, unpricedPublishedModels, staleIntroWindows, headerKey,
   parseOpenAiPricingTable, openAiPriceFromCell, openAiModelIdFromCell }
   from '../scripts/check-pricing-drift.mjs';
 
@@ -123,6 +124,54 @@ header('every way of NOT knowing throws — never a quiet "aligned"');
     '| Claude Opus 5 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |'].join('\n');
   check('an implausibly thin parse throws rather than reporting clean',
     throws(() => parsePricingTable(thin), /only 1 model rows/));
+}
+
+header('a model priced by prompt length: two rows, one model (Claude Haiku 5.5, live 2026-11-09)');
+{
+  const SHORT = '| Claude Haiku 5.5 (for prompts up to 100,000 tokens) | $0.10 / MTok | $0.125 / MTok | $0.20 / MTok | $0.01 / MTok | $0.50 / MTok |';
+  const LONG  = '| Claude Haiku 5.5 (for prompts over 100,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok | $0.05 / MTok | $2.50 / MTok |';
+  const doc = (...extra) => ['## Model pricing', '', HEADER, SEP, ...ROWS, ...extra, '', 'after'].join('\n');
+  check('the qualifier is read off the cell', JSON.stringify(promptTierFromDisplayName('Claude Haiku 5.5 (for prompts up to 100,000 tokens)')) === '{"kind":"upTo","tokens":100000}'
+    && JSON.stringify(promptTierFromDisplayName('Claude Haiku 5.5 (for prompts over 100,000 tokens)')) === '{"kind":"over","tokens":100000}' && promptTierFromDisplayName('Claude Haiku 4.5') === null);
+  check('both rows name the same model id', modelIdFromDisplayName('Claude Haiku 5.5 (for prompts up to 100,000 tokens)') === 'claude-haiku-5-5' && modelIdFromDisplayName('Claude Haiku 5.5 (for prompts over 100,000 tokens)') === 'claude-haiku-5-5');
+  const r = parsePricingTable(doc(SHORT, LONG));
+  check('the first row is the model\'s rate', r['claude-haiku-5-5'].input === 0.1 && r['claude-haiku-5-5'].output === 0.5 && r['claude-haiku-5-5'].cacheRead === 0.01 && r['claude-haiku-5-5'].cacheCreate === 0.125);
+  check('the second is its longPrompt row, threshold included', JSON.stringify(r['claude-haiku-5-5'].longPrompt) === JSON.stringify({ over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 }));
+  check('one model, not two: eleven ids', Object.keys(r).length === 11, Object.keys(r).join(','));
+  check('the order of the two rows does not matter', JSON.stringify(parsePricingTable(doc(LONG, SHORT))['claude-haiku-5-5']) === JSON.stringify(r['claude-haiku-5-5']));
+  check('a model with one row carries no longPrompt', !('longPrompt' in r['claude-haiku-4-5']));
+  check('an "over" row with no first row throws', throws(() => parsePricingTable(doc(LONG)), /no row for shorter prompts/));
+  check('an "up to" row with no second row throws', throws(() => parsePricingTable(doc(SHORT)), /no row for longer prompts/));
+  check('thresholds that do not meet throw', throws(() => parsePricingTable(doc(SHORT, LONG.replace('100,000', '200,000'))), /do not meet/));
+  check('two "over" rows throw', throws(() => parsePricingTable(doc(SHORT, LONG, LONG)), /more than one/));
+  // A qualifier the parser does not know stays in the id, where it matches no row of ours and is reported as unpriced.
+  check('an unknown qualifier is not read as the model\'s rate', modelIdFromDisplayName('Claude Haiku 5.5 (weekend rate)') !== 'claude-haiku-5-5');
+
+  const ours = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125, longPrompt: { over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 } };
+  check('a matching long-prompt row is not drift', diffPricing({ 'claude-haiku-5-5': ours }, r).length === 0);
+  const moved = diffPricing({ 'claude-haiku-5-5': { ...ours, longPrompt: { ...ours.longPrompt, over: 200000, output: 2 } } }, r);
+  check('a moved threshold and a moved long-prompt price are drift', moved.length === 2 && moved.some((d) => d.field === 'longPrompt.over' && d.ours === 200000 && d.published === 100000) && moved.some((d) => d.field === 'longPrompt.output'), JSON.stringify(moved));
+  const { longPrompt: _drop, ...flat } = ours;
+  const missing = diffPricing({ 'claude-haiku-5-5': flat }, r);
+  check('a published long-prompt row we do not carry is drift', missing.length === 1 && missing[0].field === 'longPrompt' && missing[0].ours === 'absent', JSON.stringify(missing));
+  const gone = diffPricing({ 'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25, longPrompt: ours.longPrompt } }, r);
+  check('a long-prompt row we carry that the page dropped is drift', gone.length === 1 && gone[0].field === 'longPrompt' && gone[0].published === 'absent', JSON.stringify(gone));
+}
+
+header('a published model with no row of ours is drift (four shipped unpriced by 2026-11-09)');
+{
+  const { rates, retired } = parsePricingRows(DOC);
+  check('parsePricingRows carries the same rates parsePricingTable returns', JSON.stringify(rates) === JSON.stringify(parsePricingTable(DOC)));
+  check('retired rows are named', isRetiredDisplayName('Claude Opus 4.1 ([retired, except on Bedrock](https://example.com/x))') && !isRetiredDisplayName('Claude Opus 4.8')
+    && [...retired].sort().join() === 'claude-haiku-3-5,claude-opus-4-1', [...retired].join());
+  const all = Object.fromEntries(Object.keys(rates).filter((id) => !retired.has(id)).map((id) => [id, rates[id]]));
+  check('every live row priced -> nothing to report, the two retired rows included', unpricedPublishedModels(all, rates, retired).length === 0);
+  const { 'claude-fable-5': _f, 'claude-sonnet-5': _s, ...partial } = all;
+  const u = unpricedPublishedModels(partial, rates, retired);
+  check('a live row we lack is reported, by id, sorted', u.length === 2 && u[0].model === 'claude-fable-5' && u[1].model === 'claude-sonnet-5' && u.every((d) => d.ours === 'unpriced' && d.published === 'listed' && d.field === '*'), JSON.stringify(u));
+  check('…and says what happens to its requests', /fallback rate/.test(u[0].note));
+  check('without the retired set, a retired row is reported too', unpricedPublishedModels(all, rates).map((d) => d.model).join() === 'claude-haiku-3-5,claude-opus-4-1');
+  check('an Object key is not mistaken for a row of ours', unpricedPublishedModels({}, { constructor: rates['claude-opus-5'] }).length === 1);
 }
 
 header('picking the RIGHT table when several look alike');

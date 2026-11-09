@@ -51,7 +51,7 @@ await writeFile(join(accountsDir, 'one.json'), JSON.stringify({
 const holds = [];
 const fetchImpl = async (url, init) => {
   if (String(url).includes('/v1/models')) {
-    const ids = ['claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
+    const ids = ['claude-fable-5-2', 'claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
     return new Response(JSON.stringify({ data: ids.map((id) => ({ id, type: 'model' })) }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   const text = init?.body ? new TextDecoder().decode(init.body) : '';
@@ -130,8 +130,8 @@ const BASE = await startOn({});
 
 header('a short name is reserved at the model it resolves to');
 {
-  const c = await burstCase(BASE, 'fable-runner', 'fable', 'claude-fable-5', 'claude-sonnet-4-6');
-  check('the sonnet-4-6 fallback really is ~3x cheaper than fable', c.right > c.cheap * 3, `${c.right} vs ${c.cheap}`);
+  const c = await burstCase(BASE, 'fable-runner', 'fable', 'claude-fable-5-2', 'claude-sonnet-4-6');
+  check('the sonnet-4-6 fallback really is over 2x cheaper than fable', c.right > c.cheap * 2, `${c.right} vs ${c.cheap}`);
   check('key created with a cap between the two', c.created && c.cap > c.cheap && c.cap < c.right, JSON.stringify(c));
   check('with one `fable` request in flight, the next is refused', c.status === 429, `${c.status} ${c.body.slice(0, 300)}`);
   check('…and the reservation named is fable\'s', reservedIn(c.body) === Number(c.right.toFixed(2)), `${reservedIn(c.body)} vs ${c.right.toFixed(2)}`);
