@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.3] - 2026-11-09
+
+- **Claude Code 2.1.321 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.319.
+- **The bundled template is labelled Claude Code 2.1.321.** It was labelled 2.1.319. Its `user-agent` value is `claude-cli/2.1.321 (external, sdk-cli)`.
+
 ### Changed
 
 - The key-socket gate logs its refusal the same way: a request on a socket whose bound named key is unknown, revoked or expired now logs one line without `-v`, with the reason and the source, as the API key check has since 6.23.2. A request on a key Unix socket has no peer address and logs `from unknown address`; the user-agent and the Access user are reported as for any other request. Never a key value.
