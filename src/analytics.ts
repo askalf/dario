@@ -348,7 +348,22 @@ interface PricingEntry extends Rate {
    * effective at its own timestamp.
    */
   intro?: Rate & { until: string }; // 'YYYY-MM-DD'
+  /**
+   * Prices for a request whose prompt is longer than `over` tokens, where the
+   * published table lists a second row for it. The prompt is every input-side
+   * token: uncached input, cache reads and cache writes. Each request is priced
+   * on its own length, so this can only be applied to one request's tokens,
+   * never to a sum of several (see pricingModelForRequest).
+   */
+  longPrompt?: Rate & { over: number };
 }
+
+/**
+ * The tag a long-prompt request's model carries where rows are kept per model
+ * (the ledger): `claude-haiku-5-5[long]`. pricingRateFor reads it as "the
+ * long-prompt row of this model"; on a model with no such row it is ignored.
+ */
+export const LONG_PROMPT_TAG = '[long]';
 
 /**
  * Published per-1M-token rates, keyed by dario's model id.
@@ -365,6 +380,16 @@ export const PRICING: Record<string, PricingEntry> = {
   // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
   // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  // Fable 5.1 kept $10/$50 and cut cache reads to $0.25: 0.025x input, where
+  // Fable 5 is 0.1x. Fable 5.2 is $8/$40 with the same 0.025x, so $0.20. Not
+  // derived rows; copy the table.
+  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
+  'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10 },
+  // Mythos is the same model as the Fable of its version without the added
+  // safeguards, at the same prices, for verified organizations only.
+  'claude-mythos-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
+  'claude-mythos-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10 },
   // Opus 5 ships at the Opus 4.8 rate — $5/$25, no long-context premium. (Its
   // fast-mode tier is $10/$50, but that rides `speed:"fast"` on the API path,
   // which the subscription surface dario proxies never sends.)
@@ -377,6 +402,11 @@ export const PRICING: Record<string, PricingEntry> = {
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.
   'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  // Still served, and the model catalog lists it (as claude-opus-4-5-20251101).
+  'claude-opus-4-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  // Sonnet 5.5 is Sonnet 5's $2/$10 with cache reads at $0.10: 0.05x input,
+  // the same footnote as Opus 5.5.
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5 },
   // Sonnet 5 is $2/$10 — PERMANENTLY. This shipped as "introductory pricing
   // through 2026-08-31, then $3/$15", and was modeled here as a dated cutover.
   // Anthropic has since cancelled that increase and made $2/$10 the standard
@@ -388,6 +418,17 @@ export const PRICING: Record<string, PricingEntry> = {
   // future — a date nobody is watching is exactly what caused this.
   'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+  // Deprecated and still served; the model catalog lists it (as
+  // claude-sonnet-4-5-20250929). The same rate as the fallback, but a row of
+  // its own keeps a key budget from holding it at the highest rate.
+  'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+  // Haiku 5.5 is the one model priced by prompt length: $0.10/$0.50 up to
+  // 100,000 prompt tokens, and five times that on every bucket for a request
+  // over it. pricingModelForRequest picks the row; a sum of requests cannot.
+  'claude-haiku-5-5': {
+    input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125,
+    longPrompt: { over: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 },
+  },
   // Haiku 4.5 is $1/$5. This carried $0.80/$4 — Haiku 3.5's row, copied
   // wholesale including its cache rates — so every Haiku 4.5 cost read ~20%
   // LOW. Found by check-pricing-drift.mjs on its very first run (#1048).
@@ -455,6 +496,10 @@ export function providerOfModel(model: string): PricingProvider {
  */
 export function pricingRateFor(model: string, atMs: number): Rate {
   const baseModel = pricingBaseModel(model);
+  if (model.endsWith(LONG_PROMPT_TAG)) {
+    const long = Object.hasOwn(PRICING, baseModel) ? PRICING[baseModel]!.longPrompt : undefined;
+    if (long) return { input: long.input, output: long.output, cacheRead: long.cacheRead, cacheCreate: long.cacheCreate };
+  }
   if (providerOfModel(baseModel) === 'openai') {
     const rate = OPENAI_PRICING[baseModel] ?? OPENAI_PRICING[OPENAI_FALLBACK_MODEL]!;
     return { ...rate };
@@ -467,8 +512,14 @@ export function pricingRateFor(model: string, atMs: number): Rate {
   return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
 }
 
-/** The id a price list is keyed by: context tag, effort suffix and date stamp removed. */
-function pricingBaseModel(model: string): string {
+/**
+ * The id a price list is keyed by: long-prompt tag, context tag, effort suffix
+ * and date stamp removed. The long-prompt tag comes off first and by itself,
+ * since it follows whatever the model was called (`claude-haiku-5-5[1m][long]`)
+ * and the tag pattern below takes one tag only.
+ */
+function pricingBaseModel(tagged: string): string {
+  const model = tagged.endsWith(LONG_PROMPT_TAG) ? tagged.slice(0, -LONG_PROMPT_TAG.length) : tagged;
   return model.replace(/\[[^[\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
 }
 
@@ -479,16 +530,46 @@ export function hasPublishedRate(model: string): boolean {
 }
 
 /**
- * The highest rate either price list carries, bucket by bucket (intro rates
- * included). An upper bound on what any listed model bills, for pricing a
- * model that has no row of its own where a low estimate would let spend
- * through.
+ * The model one request is priced as: `model` itself, or `model` tagged
+ * LONG_PROMPT_TAG when its price list has a long-prompt row and this
+ * request's prompt (input, cache reads and cache writes together) is over
+ * that row's threshold. `t` must be ONE request's tokens: the published
+ * rule prices each request on its own prompt length, and a day's sum would
+ * cross the threshold on short requests alone. The ledger keys its rows by
+ * this, which is what lets a day's totals still be priced at read time.
+ */
+export function pricingModelForRequest(
+  model: string,
+  t: { inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+): string {
+  if (model.endsWith(LONG_PROMPT_TAG)) return model;
+  const base = pricingBaseModel(model);
+  const long = Object.hasOwn(PRICING, base) ? PRICING[base]!.longPrompt : undefined;
+  if (!long) return model;
+  return t.inputTokens + t.cacheReadTokens + t.cacheCreateTokens > long.over ? `${model}${LONG_PROMPT_TAG}` : model;
+}
+
+/** USD one request's tokens bill at, its prompt length taken into account. */
+export function costOfRequest(
+  model: string,
+  atMs: number,
+  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+): number {
+  return costOfTokens(pricingModelForRequest(model, t), atMs, t);
+}
+
+/**
+ * The highest rate either price list carries, bucket by bucket (intro and
+ * long-prompt rates included). An upper bound on what any listed model bills,
+ * for pricing a model that has no row of its own where a low estimate would
+ * let spend through.
  */
 export function highestPublishedRate(): Rate {
   const rates: Rate[] = [...Object.values(OPENAI_PRICING)];
   for (const e of Object.values(PRICING)) {
     rates.push(e);
     if (e.intro) rates.push(e.intro);
+    if (e.longPrompt) rates.push(e.longPrompt);
   }
   return {
     input: Math.max(...rates.map((r) => r.input)),
@@ -503,7 +584,8 @@ export function highestPublishedRate(): Rate {
  * no published rate is priced at highestPublishedRate, never at the
  * sonnet-4-6 / gpt-5.6-terra fallback, which is cheaper than fable, astra
  * and every opus. Matched case-insensitively, as the Claude path lowercases
- * the model it sends.
+ * the model it sends. The tokens are one request's, so a model priced by
+ * prompt length is held at the row its estimated prompt falls in.
  */
 export function costOfTokensFailClosed(
   model: string,
@@ -511,7 +593,7 @@ export function costOfTokensFailClosed(
   t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
 ): number {
   const id = model.toLowerCase();
-  if (hasPublishedRate(id)) return costOfTokens(id, atMs, t);
+  if (hasPublishedRate(id)) return costOfRequest(id, atMs, t);
   const p = highestPublishedRate();
   return ((t.inputTokens * p.input) + (t.outputTokens * p.output) + (t.cacheReadTokens * p.cacheRead) + (t.cacheCreateTokens * p.cacheCreate)) / 1_000_000;
 }
@@ -520,6 +602,7 @@ export function costOfTokensFailClosed(
  * USD the four token buckets would bill at `model`'s rate in effect at `atMs`.
  * The ledger prices its per-day rows through this too, so a pricing
  * correction reprices history instead of freezing the old number in.
+ * It reads no prompt length: for one request use costOfRequest, which does.
  */
 export function costOfTokens(
   model: string,
@@ -540,7 +623,7 @@ function estimateCost(record: RequestRecord): number {
   // that spans a pricing cutover (no model currently has one — Sonnet 5's
   // scheduled increase was cancelled and its $2/$10 made permanent)
   // estimates each side correctly rather than repricing history at today's rate.
-  return costOfTokens(record.model, record.timestamp, record);
+  return costOfRequest(record.model, record.timestamp, record);
 }
 
 /**

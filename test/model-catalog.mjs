@@ -65,7 +65,12 @@ check('baked listing advertises claude-opus-5[1m]', listedIds.includes('claude-o
 check('baked listing keeps claude-opus-4-8[1m]', listedIds.includes('claude-opus-4-8[1m]'));
 check('baked listing advertises claude-sonnet-4-6[1m]', listedIds.includes('claude-sonnet-4-6[1m]'));
 check('baked listing advertises claude-fable-5[1m]', listedIds.includes('claude-fable-5[1m]'));
-check('baked listing has NO haiku [1m]', !listedIds.includes('claude-haiku-4-5[1m]'));
+check('baked listing carries the current model of every family, [1m] where the family has one',
+  ['claude-fable-5-2', 'claude-fable-5-2[1m]', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-sonnet-5-5[1m]', 'claude-haiku-5-5']
+    .every((id) => listedIds.includes(id)), listedIds.join(','));
+check('baked listing is in advertised order: the same order normalizeUpstreamIds gives it',
+  JSON.stringify(normalizeUpstreamIds([...BAKED_BASE_MODELS].reverse())) === JSON.stringify(BAKED_BASE_MODELS));
+check('baked listing has NO haiku [1m]', !listedIds.includes('claude-haiku-4-5[1m]') && !listedIds.includes('claude-haiku-5-5[1m]'));
 check('baked listing matches the generated expansion exactly',
   JSON.stringify(listedIds) === JSON.stringify(expanded));
 
@@ -104,6 +109,10 @@ console.log('  family resolution + alias derivation');
 
 check('version key parses', JSON.stringify(modelVersionKey('claude-opus-4-8')) === '[4,8]');
 check('newest opus wins', resolveFamilyBase('opus', BAKED_BASE_MODELS) === 'claude-opus-5-5');
+check('newest fable wins: 5-2 over 5-1 over the major-only 5', resolveFamilyBase('fable', BAKED_BASE_MODELS) === 'claude-fable-5-2'
+  && resolveFamilyBase('fable', ['claude-fable-5', 'claude-fable-5-1']) === 'claude-fable-5-1');
+check('newest sonnet and haiku win', resolveFamilyBase('sonnet', BAKED_BASE_MODELS) === 'claude-sonnet-5-5'
+  && resolveFamilyBase('haiku', BAKED_BASE_MODELS) === 'claude-haiku-5-5');
 check('a future opus auto-bumps the alias',
   resolveFamilyBase('opus', ['claude-opus-4-8', 'claude-opus-4-9']) === 'claude-opus-4-9');
 check('absent family resolves null', resolveFamilyBase('opus', ['claude-haiku-4-5']) === null);
@@ -112,9 +121,9 @@ check("'opus' resolves", resolveAliasAgainst('opus', BAKED_BASE_MODELS) === 'cla
 check("'opus1m' DERIVES from 'opus' — same base + [1m]",
   resolveAliasAgainst('opus1m', BAKED_BASE_MODELS) === 'claude-opus-5-5[1m]');
 check("'fable1m' derives the same way",
-  resolveAliasAgainst('fable1m', BAKED_BASE_MODELS) === 'claude-fable-5[1m]');
+  resolveAliasAgainst('fable1m', BAKED_BASE_MODELS) === 'claude-fable-5-2[1m]');
 check("'sonnet1m' derives the same way",
-  resolveAliasAgainst('sonnet1m', BAKED_BASE_MODELS) === 'claude-sonnet-5[1m]');
+  resolveAliasAgainst('sonnet1m', BAKED_BASE_MODELS) === 'claude-sonnet-5-5[1m]');
 check("'haiku1m' is refused by the rule", resolveAliasAgainst('haiku1m', BAKED_BASE_MODELS) === null);
 check('full ids are not alias-resolved', resolveAliasAgainst('claude-opus-4-8', BAKED_BASE_MODELS) === null);
 check('unknown shorthand is not alias-resolved', resolveAliasAgainst('zenith', BAKED_BASE_MODELS) === null);

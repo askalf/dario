@@ -20,6 +20,14 @@ Pricing has been wrong twice in this repo (#1047, #1048); a stored dollar
 figure would have frozen the wrong number in, a stored token count gets
 repriced the moment the table is fixed.
 
+One price depends on a single request and not on a day: Claude Haiku 5.5
+costs five times as much on every bucket when the request's prompt (input,
+cache reads and cache writes together) is over 100,000 tokens. A day's sum
+cannot say which of its requests were, so those requests are filed under
+their own row, `claude-haiku-5-5[long]`, and each row is priced at its own
+rate. Haiku 5.5 rows written before that key existed hold both kinds and are
+priced at the short-prompt rate.
+
 ## What counts
 
 Only responses with a 2xx status. A 429 carries no tokens and a 5xx bills
@@ -153,3 +161,9 @@ the 5.6 family and gpt-6-astra list a cache-write price of 1.25× input, which
 6.6.0 had as the input rate. A page the watcher can fetch but no longer
 understand is filed as an issue, not logged as a warning — that is how the
 Anthropic side went unwatched for ten days in September 2026.
+
+On the Anthropic side the watcher also reports a published model `PRICING`
+has no row for, unless the page marks it retired. An unpriced Claude model
+does not fail: it is costed at the Sonnet 4.6 rate. Fable 5.1, Fable 5.2,
+Sonnet 5.5 and Haiku 5.5 all shipped that way and the watcher, which only
+walked the rows dario already had, reported the table aligned.
