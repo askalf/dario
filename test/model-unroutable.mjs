@@ -151,7 +151,7 @@ header('refused locally: a model no provider lists, on both wire shapes');
   check('Anthropic wire shape: {type:"error", error:{type, message}}',
     a.json?.type === 'error' && a.json?.error?.type === 'invalid_request_error' && typeof a.json?.error?.message === 'string', a.text.slice(0, 200));
   check('message names the model and what was consulted',
-    (a.json?.error?.message ?? '').includes(UNLISTED_SLUG) && /codex account live \(1 listed slug\)/.test(a.json?.error?.message ?? ''), a.json?.error?.message);
+    (a.json?.error?.message ?? '').includes(UNLISTED_SLUG) && /codex account live \(1 listed slug as Codex CLI \d+\.\d+\.\d+\)/.test(a.json?.error?.message ?? ''), a.json?.error?.message);
 
   const o = await post(PROXY_PORT, '/v1/chat/completions', UNLISTED_SLUG);
   check('/v1/chat/completions → 400', o.status === 400, `${o.status} ${o.text.slice(0, 200)}`);

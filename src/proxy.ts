@@ -35,7 +35,7 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSh
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline, type CodexCacheTrace } from './codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, CODEX_CLIENT_VERSION, type CodexForwardOutcome, type CodexDecline, type CodexCacheTrace } from './codex-backend.js';
 import { formatCacheTraceLine } from './cache-trace.js';
 import { effortForCodex, requestNamesEffort, withResponsesEffort } from './effort.js';
 import { thinkingToReasoningEffort, type AnthropicThinkingConfig } from './anthropic-responses-translate.js';
@@ -5387,9 +5387,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             && !(isOpenAI && OPENAI_MODEL_MAP[rawModel])
             && !/^claude-/i.test(rawModel.trim())
             && !isClaudeServableModel(rawModel, getCachedBases(), (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m))) {
+            // The client version is named because the backend lists models per
+            // version: a model the plan includes can be missing only because
+            // the list was asked for as an older Codex CLI (dario#1842).
             const consulted = [
               codexCreds || codexUnavailable
-                ? `codex account ${(codexCreds ?? codexUnavailable)!.alias} (${codexModels.length} listed slug${codexModels.length === 1 ? '' : 's'})`
+                ? `codex account ${(codexCreds ?? codexUnavailable)!.alias} (${codexModels.length} listed slug${codexModels.length === 1 ? '' : 's'} as Codex CLI ${CODEX_CLIENT_VERSION})`
                 : 'no codex account',
               openaiBackend ? `openai backend ${openaiBackend.name}${isOpenAI ? '' : ' (OpenAI path only)'}` : 'no openai backend',
               `claude catalog (${getCachedBases().length} bases)`,

@@ -58,6 +58,7 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 |---|---|---|---|
 | `DARIO_CODEX_USAGE_POLL_MS` | — | `1800000` (30 min) | how stale a ChatGPT seat's utilisation reading may get before the proxy re-reads it from `/backend-api/wham/usage` (no model call). A seat that is serving is read from every answer and never polled; boot reads each seat once. `0` turns the reads off and leaves only the per-answer headers. Floored at one minute |
 | `DARIO_CODEX_USAGE_URL` | — | derived from `DARIO_CODEX_BASE_URL` | the usage endpoint; `…/backend-api/wham/usage` beside the Responses base |
+| `DARIO_CODEX_CLIENT_VERSION` | — | `0.167.0` | the Codex CLI version dario names when it asks the ChatGPT backend which models an account may use. The backend answers per version: a model the plan includes is missing from `/v1/models` when the list is asked for as a CLI older than the one the model shipped with. Set it to the current `@openai/codex` release when a new model does not appear, and restart |
 
 ## Multi-instance
 

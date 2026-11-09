@@ -13,6 +13,9 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **dario asks the ChatGPT backend for its model list as Codex CLI 0.167.0.** It asked as 0.155.0. The backend answers per client version, so a model newer than the version named is left out of the list, and a request for it is refused as a model no provider lists (#1842). The refusal now names the version the list was asked for as, and `DARIO_CODEX_CLIENT_VERSION`, which overrides it, is in the configuration reference.
+- **gpt-6.1-sol and gpt-6.1-terra are priced at their published rates.** `dario usage`, `/analytics` and the ledger costed both at gpt-5.6-terra's $2/$12 per million tokens. gpt-6.1-sol is $2/$10 and gpt-6.1-terra is $1/$5, each with cache reads at 0.05x input.
+
 ## [6.23.4] - 2026-11-09
 
 - **The bundled Fable system prompt is the one captured from Claude Code 2.1.321.** It is 10135 characters; the bundle held a 9709-character one. Requests for Fable models built from the bundled template carry it.

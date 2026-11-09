@@ -53,6 +53,14 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
     luna.input === 0.1 && luna.output === 0.5 && luna.cacheRead === 0.01 && luna.cacheCreate === 0.125, JSON.stringify(luna));
   check('neither is the terra fallback any more', JSON.stringify(sol) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra'])
     && JSON.stringify(luna) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra']));
+  const sol61 = pricingRateFor('gpt-6.1-sol', T);
+  const terra61 = pricingRateFor('gpt-6.1-terra:high', T);
+  check('gpt-6.1-sol has its own published rate ($2 in / $10 out, $0.10 cached, $2.50 cache write)',
+    sol61.input === 2 && sol61.output === 10 && sol61.cacheRead === 0.1 && sol61.cacheCreate === 2.5, JSON.stringify(sol61));
+  check('gpt-6.1-terra has its own published rate ($1 in / $5 out, $0.05 cached, $1.25 cache write), effort suffix or not',
+    terra61.input === 1 && terra61.output === 5 && terra61.cacheRead === 0.05 && terra61.cacheCreate === 1.25, JSON.stringify(terra61));
+  check('the 6.1 pair is not read as the 6 pair or the 5.6 one: the dot is part of the id',
+    JSON.stringify(sol61) !== JSON.stringify(sol) && JSON.stringify(terra61) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra']));
   const lunaCost = costOfTokens('gpt-6-luna', T, { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 0, cacheCreateTokens: 0 });
   check('costOfTokens: 1M in + 1M out on gpt-6-luna = $0.60', Math.abs(lunaCost - 0.6) < 1e-9, lunaCost);
   const c = costOfTokens('claude-opus-5', T, { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
