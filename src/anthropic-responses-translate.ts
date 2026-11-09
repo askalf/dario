@@ -777,8 +777,8 @@ export function anthropicToResponsesRequest(
       // the common case is stated. A tool that does ask for strict goes out
       // without the field, as before: the two APIs mean different schemas by
       // it (Anthropic's allows optional properties, the Responses one requires
-      // every property), and `strict: true` on a schema with an optional
-      // property is a 400.
+      // every property and `additionalProperties: false`), and the backend
+      // refuses `strict: true` on a schema that is not that as an invalid one.
       if (tool.strict !== true) fn.strict = false;
       tools.push(fn);
     }
