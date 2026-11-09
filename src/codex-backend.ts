@@ -576,7 +576,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
   if (instructions.length > 0) out.instructions = instructions;
 
   const tools = body.tools as
-    | Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>
+    | Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown; strict?: boolean | null } }>
     | undefined;
   if (Array.isArray(tools) && tools.length > 0) {
     out.tools = tools.map(t => ({
@@ -584,6 +584,11 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       name: t.function?.name ?? '',
       description: t.function?.description,
       parameters: t.function?.parameters ?? { type: 'object', properties: {} },
+      // Always stated. A chat/completions tool without `strict` is not strict;
+      // a Responses tool without it is left to the backend's default, under
+      // which a client's optional parameters came back as required ones
+      // (dario#1836). The Codex CLI states `strict: false` on its own tools.
+      strict: typeof t.function?.strict === 'boolean' ? t.function.strict : false,
     }));
   }
   if (body.tool_choice != null) out.tool_choice = toResponsesToolChoice(body.tool_choice);

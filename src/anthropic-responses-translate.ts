@@ -117,6 +117,8 @@ export interface AnthropicTool {
   /** Server-tool discriminator (`bash_20250124`, …). Untranslatable. */
   type?: string;
   cache_control?: unknown;
+  /** Anthropic's strict tool use: the model's input is held to `input_schema`. */
+  strict?: boolean;
 }
 
 export interface AnthropicToolChoice {
@@ -769,6 +771,15 @@ export function anthropicToResponsesRequest(
         parameters: tool.input_schema,
       };
       if (typeof tool.description === 'string') fn.description = tool.description;
+      // An Anthropic tool is not strict unless it says so, and a Responses
+      // tool that leaves `strict` out is left to the backend's default, under
+      // which optional parameters came back as required ones (dario#1836). So
+      // the common case is stated. A tool that does ask for strict goes out
+      // without the field, as before: the two APIs mean different schemas by
+      // it (Anthropic's allows optional properties, the Responses one requires
+      // every property), and `strict: true` on a schema with an optional
+      // property is a 400.
+      if (tool.strict !== true) fn.strict = false;
       tools.push(fn);
     }
     if (tools.length > 0) out.tools = tools;

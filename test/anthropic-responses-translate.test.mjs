@@ -76,6 +76,8 @@ test('tools are FLATTENED function tools (not nested under .function); web searc
     name: 'get_weather',
     description: 'Get current weather',
     parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+    // stated, not left to the backend's default (dario#1836)
+    strict: false,
   });
   // no `.function` wrapper anywhere
   assert.ok(!Object.prototype.hasOwnProperty.call(out.tools[1], 'function'));

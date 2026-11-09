@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A tool sent to a ChatGPT-plan model keeps its optional parameters optional.** Converting a request to the Responses shape dropped the tool's `strict` field, which left it to the backend's default, and a client's optional parameters came back as required ones: an agent kept filling in an argument it had been told to leave out (#1836). On `/v1/chat/completions` a tool's own `strict` is now carried, and a tool without one goes out as `strict: false`. On `/v1/messages` a tool goes out as `strict: false` unless it asked for Anthropic's strict tool use, which is sent without the field as before.
+
 ## [6.23.4] - 2026-11-09
 
 - **The bundled Fable system prompt is the one captured from Claude Code 2.1.321.** It is 10135 characters; the bundle held a 9709-character one. Requests for Fable models built from the bundled template carry it.
