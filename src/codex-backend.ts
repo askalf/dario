@@ -106,9 +106,8 @@ const CODEX_ORIGINATOR = 'codex_cli_rs';
 // The backend gates newer models by the client version it is told: the same
 // seat lists `gpt-6-astra` from 0.153.0 and not before, so an old default
 // hides a model the plan already includes. Keep this at a released Codex CLI
-// version. It sat at 0.155.0 while the CLI went to 0.167.0 and OpenAI
-// published gpt-6.1-sol and gpt-6.1-terra, neither of which the list fetched
-// as 0.155.0 carries (dario#1842).
+// version, and move it when a model the plan includes is missing from the
+// list (dario#1842).
 export const CODEX_CLIENT_VERSION = process.env.DARIO_CODEX_CLIENT_VERSION || '0.167.0';
 
 /**
