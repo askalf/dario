@@ -267,10 +267,12 @@ export const VARIANT_FAMILIES: readonly VariantFamily[] = [
   { key: 'opus-5', captureModel: 'claude-opus-5', matches: (m) => /opus-5(?!\d)/.test(m) },
   { key: 'sonnet-5-5', captureModel: 'claude-sonnet-5-5', matches: (m) => /sonnet-5-5(?!\d)/.test(m), within: 'sonnet-5' },
   { key: 'sonnet-5', captureModel: 'claude-sonnet-5', matches: (m) => /sonnet-5(?!\d)/.test(m) },
-  // No Haiku has had a prompt of its own so far (Haiku 4.5 gets the base),
-  // and Haiku 5.5 has not been captured yet. The other 5.5 models each turned
-  // out to have one, close to the base in size.
-  { key: 'haiku-5-5', captureModel: 'claude-haiku-5-5', matches: (m) => /haiku-5-5(?!\d)/.test(m), mayShareBase: true },
+  // Haiku 5.5 has a prompt of its own: 8633 characters against a base of 5783
+  // when it was first captured (CC 2.1.322). It was added with `mayShareBase`
+  // to find that out and the flag came off once the capture was in, so a
+  // bundle without the variant is a fault, as it is for the other families
+  // here. Haiku 4.5 matches nothing in this table and gets the base.
+  { key: 'haiku-5-5', captureModel: 'claude-haiku-5-5', matches: (m) => /haiku-5-5(?!\d)/.test(m) },
 ];
 
 /**
@@ -295,10 +297,14 @@ export function variantFor(variants: Record<string, string>, family: VariantFami
  * Non-empty on a healthy current bundle means the
  * lock-step is degraded: a bad bake, an unreadable bundle behind a live
  * capture, or a pre-variants live cache shadowing the bundle.
+ *
+ * `families` is the table to hold `t` against. Callers leave it out; the
+ * tests pass one of their own, since no family in VARIANT_FAMILIES carries
+ * `mayShareBase` between one unmeasured model and the next.
  */
-export function missingVariantFamilies(t: TemplateData): string[] {
+export function missingVariantFamilies(t: TemplateData, families: readonly VariantFamily[] = VARIANT_FAMILIES): string[] {
   const have = promptVariantsOf(t);
-  return VARIANT_FAMILIES.filter((f) => !f.mayShareBase && variantFor(have, f) === undefined).map((f) => f.key);
+  return families.filter((f) => !f.mayShareBase && variantFor(have, f) === undefined).map((f) => f.key);
 }
 
 /**

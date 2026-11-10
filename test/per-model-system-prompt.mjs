@@ -201,14 +201,29 @@ header('a model version within a family: its own prompt, else the family\'s');
   check('claude-haiku-5-5 and a dated id of it', familyOf('claude-haiku-5-5') === 'haiku-5-5' && familyOf('claude-haiku-5-5-20261001') === 'haiku-5-5');
   check('Haiku 4.5 and a two-digit Haiku minor are no family\'s', familyOf('claude-haiku-4-5') === undefined && familyOf('claude-haiku-5-50') === undefined);
 
+  // Haiku 5.5 was measured to have a prompt of its own, so it is required like the other top-level families.
+  check('Haiku 5.5 is not flagged as a family that may share the base', fam('haiku-5-5').mayShareBase === undefined && fam('haiku-5-5').within === undefined);
+  check('own variant for Haiku 5.5, and nothing to fall back on but the base', variantFor({ ...held, 'haiku-5-5': 'HAIKU55' }, fam('haiku-5-5')) === 'HAIKU55' && variantFor(held, fam('haiku-5-5')) === undefined);
+  const required = { fable: 'F', 'opus-5': 'O', 'sonnet-5': 'S', 'haiku-5-5': 'H' };
+  const templateWith = (variants) => ({ system_prompt: 'BASE', system_prompt_variants: variants });
+  check('a template with every top-level variant misses no family', missingVariantFamilies(templateWith(required)).length === 0);
+  check('a template with no Haiku 5.5 variant misses Haiku 5.5',
+    JSON.stringify(missingVariantFamilies(templateWith({ fable: 'F', 'opus-5': 'O', 'sonnet-5': 'S' }))) === JSON.stringify(['haiku-5-5']));
+  check('a template with no Sonnet 5 variant misses Sonnet 5 and what sits within it',
+    JSON.stringify(missingVariantFamilies(templateWith({ fable: 'F', 'opus-5': 'O', 'haiku-5-5': 'H' }))) === JSON.stringify(['sonnet-5-5', 'sonnet-5']));
+
   // A family that may share the base: its own variant, else the base, and never reported missing.
-  check('own variant wins for a family that may share the base', variantFor({ ...held, 'haiku-5-5': 'HAIKU55' }, fam('haiku-5-5')) === 'HAIKU55');
-  check('none of its own: undefined, which leaves the base', variantFor(held, fam('haiku-5-5')) === undefined);
-  const required = { fable: 'F', 'opus-5': 'O', 'sonnet-5': 'S' };
-  check('a template with no variant for it misses no family',
-    missingVariantFamilies({ system_prompt: 'BASE', system_prompt_variants: required }).length === 0);
-  check('a template with no Sonnet 5 variant still misses Sonnet 5 and what sits within it',
-    JSON.stringify(missingVariantFamilies({ system_prompt: 'BASE', system_prompt_variants: { fable: 'F', 'opus-5': 'O' } })) === JSON.stringify(['sonnet-5-5', 'sonnet-5']));
+  // No family in the table carries the flag between one unmeasured model and the next, so the
+  // rule is held against a table of the test's own.
+  const unmeasured = { key: 'probe-9', captureModel: 'claude-probe-9', matches: (m) => m.includes('probe-9'), mayShareBase: true };
+  const measured = { key: 'known-9', captureModel: 'claude-known-9', matches: (m) => m.includes('known-9') };
+  check('own variant wins for a family that may share the base', variantFor({ 'probe-9': 'P9' }, unmeasured) === 'P9');
+  check('none of its own: undefined, which leaves the base', variantFor(held, unmeasured) === undefined);
+  check('a template with no variant for it does not miss it', missingVariantFamilies(templateWith({ 'known-9': 'K' }), [unmeasured, measured]).length === 0);
+  check('the family beside it, without the flag, is still missed',
+    JSON.stringify(missingVariantFamilies(templateWith({}), [unmeasured, measured])) === JSON.stringify(['known-9']));
+  check('with no table given, the template is held against VARIANT_FAMILIES',
+    JSON.stringify(missingVariantFamilies(templateWith({}))) === JSON.stringify(VARIANT_FAMILIES.map((f) => f.key)));
 
   // With the loaded template: the model version's own variant when it holds one, else the family's.
   const loaded = promptVariantsOf(CC_TEMPLATE);
