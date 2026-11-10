@@ -1,6 +1,6 @@
 # Review prompt
 
-The exact prompt used for the four reviews in this directory. Identical text given to each reviewer so the results are comparable. The Discussions that step 3 points at have since been retired, so those four links no longer resolve; the prompt is kept as it was sent.
+The exact prompt used for the four reviews in this directory. Identical text given to each reviewer so the results are comparable. The Discussions that step 3 points at are scheduled for retirement, after which those four links will no longer resolve; the prompt is kept as it was sent.
 
 ---
 
