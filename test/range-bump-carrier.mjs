@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isPlainVersion, maxTestedOf, carriesRange, pickCarrier, runFor, awaitRun, runTitleFor, RANGE_FILE, TEMPLATE_WATCH,
+  pickBinary, wireVersionOf, openWireIssueCount, mayCarry, WIRE_DRIFT_LABEL, WIRE_DRIFT_TITLE_PREFIX,
 } from '../scripts/range-bump-carrier.mjs';
 
 let pass = 0, fail = 0;
@@ -130,8 +131,86 @@ header('the run this job dispatched');
   }
 }
 
+header('the binary a dispatched run measures');
+{
+  // Two installs, as on the runner: the tool-cache copy first on PATH, the system one behind it.
+  const TOOL = '/opt/hostedtoolcache/node/22/bin/claude';
+  const SYS = '/usr/bin/claude';
+  const versions = (map) => (p) => map[p] ?? null;
+
+  check('the tool-cache copy is behind and the system one is at the version: the system one', pickBinary([TOOL, SYS], versions({ [TOOL]: '2.1.322', [SYS]: '2.1.323' }), '2.1.323') === SYS);
+  check('the system one is behind and the tool-cache copy is at the version: the tool-cache copy', pickBinary([TOOL, SYS], versions({ [TOOL]: '2.1.323', [SYS]: '2.1.322' }), '2.1.323') === TOOL);
+  check('both at the version: the first given', pickBinary([TOOL, SYS], versions({ [TOOL]: '2.1.323', [SYS]: '2.1.323' }), '2.1.323') === TOOL);
+  check('neither at the version: none, so the step installs', pickBinary([TOOL, SYS], versions({ [TOOL]: '2.1.322', [SYS]: '2.1.321' }), '2.1.323') === null);
+  check('a newer install is not the version either', pickBinary([TOOL], versions({ [TOOL]: '2.1.324' }), '2.1.323') === null);
+  check('a path that is missing or does not run is skipped', pickBinary(['/nope', SYS], (p) => { if (p === '/nope') throw new Error('ENOENT'); return '2.1.323'; }, '2.1.323') === SYS);
+  const probed = [];
+  pickBinary(['', TOOL, TOOL, undefined, SYS], (p) => { probed.push(p); return null; }, '2.1.323');
+  check('empty and repeated paths are not probed', JSON.stringify(probed) === JSON.stringify([TOOL, SYS]), probed.join(','));
+  check('a version that is not x.y.z picks nothing', pickBinary([SYS], versions({ [SYS]: 'latest' }), 'latest') === null);
+  check('no paths: none', pickBinary([], versions({}), '2.1.323') === null && pickBinary(undefined, versions({}), '2.1.323') === null);
+}
+
+header('what the wire-drift check measured, and what is open');
+{
+  check('the version from a report', wireVersionOf('{"ccVersion":"2.1.323","findings":[]}') === '2.1.323');
+  check('a report that follows log lines', wireVersionOf('[wire] capturing...\nnote\n{"ccVersion":"2.1.323"}') === '2.1.323');
+  check('no version, a null one, or one that is not x.y.z: null', wireVersionOf('{"findings":[]}') === null && wireVersionOf('{"ccVersion":null}') === null && wireVersionOf('{"ccVersion":"unknown"}') === null);
+  check('no report, or text that is not one: null', wireVersionOf(null) === null && wireVersionOf('') === null && wireVersionOf('capture failed') === null);
+
+  const issue = (title, extra = {}) => ({ title, ...extra });
+  check('issues titled as wire-drift reports are counted', openWireIssueCount([issue('Wire drift detected: CC v2.1.322'), issue('CC drift detected: v2.1.323'), issue('Wire drift detected: CC v2.1.323')]) === 2);
+  check('the other cc-drift issues are not', openWireIssueCount([issue('CC drift detected: v2.1.323'), issue('CC authorize-probe drift: v2.1.323')]) === 0);
+  check('a pull request listed among issues is not', openWireIssueCount([issue('Wire drift detected: CC v2.1.323', { pull_request: {} })]) === 0);
+  check('none open: zero', openWireIssueCount([]) === 0);
+  check('a listing that is not a list: unknown', openWireIssueCount(null) === null && openWireIssueCount({}) === null);
+  check('the label and title are the ones the watchers file under', WIRE_DRIFT_LABEL === 'cc-drift' && WIRE_DRIFT_TITLE_PREFIX === 'Wire drift detected'
+    && readFileSync(join(REPO, '.github', 'workflows', 'wire-drift-self-hosted.yml'), 'utf8').includes(WIRE_DRIFT_TITLE_PREFIX)
+    && readFileSync(join(REPO, '.github', 'workflows', 'cc-drift-template-watch.yml'), 'utf8').includes('wire_title="' + WIRE_DRIFT_TITLE_PREFIX + ': CC v${wire_cc}"'));
+}
+
+header('whether a rebake may carry the bump');
+{
+  const clean = { rangePrOpen: false, upstream: 'pass', wireExit: 0, wireVersion: '2.1.323', bakedVersion: '2.1.323', openWireIssues: 0 };
+  const carry = (over) => mayCarry({ ...clean, ...over });
+  check('everything clean, one version measured: carry', carry({}).carry === true && carry({}).reason.includes('2.1.323'));
+
+  check('a CC version PR is open: no', carry({ rangePrOpen: true }).carry === false);
+  check('the listing of CC version PRs was not read: no', carry({ rangePrOpen: null }).carry === false && carry({ rangePrOpen: undefined }).carry === false);
+  check('the upstream check failed, or gave no verdict: no', carry({ upstream: 'fail' }).carry === false && carry({ upstream: 'incomplete' }).carry === false && carry({ upstream: '' }).carry === false);
+  check('the wire-drift check failed: no', carry({ wireExit: 1 }).carry === false && carry({ wireExit: 2 }).carry === false);
+  check('the wire-drift exit code was not read: no', carry({ wireExit: null }).carry === false && carry({ wireExit: '0' }).carry === false);
+
+  // The two-install case: the bake captured from the new version, the wire check ran on the old binary.
+  const twoInstalls = carry({ wireVersion: '2.1.322' });
+  check('a clean wire check on another Claude Code version than the bake: no', twoInstalls.carry === false);
+  check('and the reason names both versions', twoInstalls.reason.includes('2.1.322') && twoInstalls.reason.includes('2.1.323'), twoInstalls.reason);
+  check('a wire check that reports no version: no', carry({ wireVersion: null }).carry === false);
+  check('a bundle that names no plain version: no', carry({ bakedVersion: '' }).carry === false && carry({ bakedVersion: '2.1.323-beta.1', wireVersion: '2.1.323-beta.1' }).carry === false);
+
+  // A clean check in this run, with a report from an earlier run still open.
+  const stale = carry({ openWireIssues: 1 });
+  check('a clean wire check with a wire-drift issue still open: no', stale.carry === false);
+  check('and the reason says the merge gate holds the rebake', stale.reason.includes('1 wire-drift issue is open') && stale.reason.includes('merge gate'), stale.reason);
+  check('several open: no', carry({ openWireIssues: 3 }).carry === false && carry({ openWireIssues: 3 }).reason.includes('3 wire-drift issues are open'));
+  check('the open issues could not be read: no', carry({ openWireIssues: null }).carry === false && carry({ openWireIssues: undefined }).carry === false);
+  check('every refusal gives a reason', [{ rangePrOpen: true }, { upstream: 'fail' }, { wireExit: 1 }, { wireVersion: null }, { bakedVersion: '' }, { openWireIssues: null }].every((o) => carry(o).reason.length > 20));
+}
+
 header('the command line');
 {
+  // may-carry reads its inputs from the environment. With no repository the open issues cannot be read.
+  const decide = (env) => {
+    const r = spawnSync(process.execPath, [join(REPO, 'scripts', 'range-bump-carrier.mjs'), 'may-carry'], { encoding: 'utf8', env: { ...process.env, GITHUB_REPOSITORY: '', RANGE_PR_OPEN: '', UPSTREAM: 'pass', WIRE_EXIT: '0', WIRE_REPORT: '', BAKED_VERSION: '2.1.323', ...env } });
+    try { return { status: r.status, ...JSON.parse(r.stdout) }; } catch { return { status: r.status, carry: null, reason: r.stdout + r.stderr }; }
+  };
+  check('may-carry with no wire report and no repository to ask: exits 0 with a no', decide({}).status === 0 && decide({}).carry === false);
+  check('may-carry names the first thing that stands in the way', decide({ RANGE_PR_OPEN: 'true' }).reason.includes('CC version PR') && decide({ UPSTREAM: 'fail' }).reason.includes('upstream') && decide({ WIRE_EXIT: '1' }).reason.includes('exit 1'));
+  check('a RANGE_PR_OPEN it does not know is not read as "none open"', decide({ RANGE_PR_OPEN: 'maybe' }).reason.includes('CC version PR'));
+  check('a wire report that is not there is a version that was not measured', decide({ WIRE_REPORT: join(REPO, 'no-such-report.json') }).reason.includes('an unknown version'));
+  check('pick-binary with no path that runs prints nothing and exits 0', (() => { const r = spawnSync(process.execPath, [join(REPO, 'scripts', 'range-bump-carrier.mjs'), 'pick-binary', '2.1.323', join(REPO, 'no-such-claude'), ''], { encoding: 'utf8' }); return r.status === 0 && r.stdout === ''; })());
+  check('pick-binary with a version that is not x.y.z exits 2', spawnSync(process.execPath, [join(REPO, 'scripts', 'range-bump-carrier.mjs'), 'pick-binary', 'latest', '/usr/bin/claude'], { encoding: 'utf8' }).status === 2);
+
   const cli = (args, env = {}) => spawnSync(process.execPath, [join(REPO, 'scripts', 'range-bump-carrier.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, GITHUB_REPOSITORY: 'o/r', ...env } });
   check('a version that is not x.y.z exits 2 before anything is asked of gh', cli(['find', 'unknown']).status === 2 && cli(['find', '2.1.323; echo x']).status === 2 && cli(['await', '2.1', '2026-11-10T12:00:00Z']).status === 2);
   check('an unknown command exits 2', cli(['bump', '2.1.323']).status === 2);
@@ -183,28 +262,47 @@ header('the workflows hold the design together');
     && runTitleFor('2.1.323') === 'CC template drift watch for Claude Code 2.1.323');
   check('the dispatch takes a cc_version input that defaults to none', /workflow_dispatch:\n    inputs:\n      cc_version:\n(?:        [^\n]*\n)*?        default: ''\n/.test(template));
 
-  const upgrade = stepOf(template, "Bring the runner's Claude Code up to the dispatched version");
-  const upgradeRun = (upgrade ?? '').split('run: |')[1] ?? '';
-  check('the upgrade step runs only in a dispatched run', ifOf(upgrade) === "if: inputs.cc_version != ''", ifOf(upgrade));
-  check('the input reaches the shell through the environment only', (upgrade ?? '').includes('WANTED: ${{ inputs.cc_version }}') && !upgradeRun.includes('${{'));
-  const at = (needle) => upgradeRun.indexOf(needle);
-  check('x.y.z, then npm latest, then upgrade-only, then the install: in that order',
+  const PIN = 'Pin this run to the dispatched Claude Code version';
+  const pin = stepOf(template, PIN);
+  const pinRun = (pin ?? '').split('run: |')[1] ?? '';
+  check('the pin step runs only in a dispatched run', ifOf(pin) === "if: inputs.cc_version != ''", ifOf(pin));
+  check('the input reaches the shell through the environment only', (pin ?? '').includes('WANTED: ${{ inputs.cc_version }}') && !pinRun.includes('${{'));
+  const at = (needle) => pinRun.indexOf(needle);
+  const INSTALL = 'npm i -g "@anthropic-ai/claude-code@${WANTED}"';
+  const NONE_FOUND = 'if [ -z "$bin" ]; then\n            echo "::warning::$WANTED was installed but no binary reports it';
+  check('x.y.z, then npm latest, then the install: in that order',
     at(PLAIN('WANTED')) > 0
     && at(PLAIN('WANTED')) < at('if [ "$WANTED" != "$latest" ]')
-    && at('if [ "$WANTED" != "$latest" ]') < at('sort -V | tail -1)" = "$installed"')
-    && at('sort -V | tail -1)" = "$installed"') < at('npm i -g "@anthropic-ai/claude-code@${WANTED}"'));
-  check('every refusal leaves the run going', (upgradeRun.match(/exit 0/g) ?? []).length === 4 && !/exit [1-9]/.test(upgradeRun) && !upgradeRun.includes('set -e'));
-  check('it runs before the check that reads the installed version', template.indexOf("- name: Bring the runner's Claude Code up to the dispatched version") < template.indexOf('- name: Run drift check'));
+    && at('if [ "$WANTED" != "$latest" ]') < at(INSTALL));
+  check('a binary already at the version is looked for before anything is installed', at('bin="$(pick)"') > 0 && at('bin="$(pick)"') < at(INSTALL));
+  check('the candidates are the install prefix, the system binary and PATH, chosen by the version each reports',
+    pinRun.includes('node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$prefix_bin" /usr/bin/claude "$(command -v claude 2>/dev/null || true)"'));
+  check('an install already past the version is left alone', at('| sort -V | tail -1)" != "$WANTED" ]') > 0 && at('| sort -V | tail -1)" != "$WANTED" ]') < at(INSTALL));
+  check('the binary is looked for again after the install', pinRun.split('bin="$(pick)"').length - 1 === 2 && pinRun.lastIndexOf('bin="$(pick)"') > at(INSTALL));
+  check('the run is pinned only to a binary that was found',
+    at(NONE_FOUND) > 0 && at('echo "DARIO_CLAUDE_BIN=$bin" >> "$GITHUB_ENV"') > at(NONE_FOUND) && pinRun.split('>> "$GITHUB_ENV"').length - 1 === 1);
+  check('every refusal leaves the run going', (pinRun.match(/exit 0/g) ?? []).length === 5 && !/exit [1-9]/.test(pinRun) && !pinRun.includes('set -e'));
+  check('it runs before the check that captures', template.indexOf(`- name: ${PIN}`) > 0 && template.indexOf(`- name: ${PIN}`) < template.indexOf('- name: Run drift check'));
+  check('nothing is installed over the system binary', !pinRun.includes('--prefix') && !pinRun.includes('sudo'));
 
   const rangePr = stepOf(template, 'Find an open CC version PR');
   check('an open CC version PR is looked for on drift and on label drift', ifOf(rangePr) === "if: steps.check.outputs.exit_code == '2' || steps.check.outputs.exit_code == '3'", ifOf(rangePr));
   check('a listing that fails reads as open', /else\n[^\n]*::warning::[^\n]*\n\s*echo "open=true" >> "\$GITHUB_OUTPUT"/.test(rangePr ?? ''));
 
   const rebake = stepOf(template, 'Auto-rebake + open PR');
-  check('the rebake carries the bump only with no CC version PR open, a passing upstream check and no wire drift',
-    (rebake ?? '').includes('if [ "$RANGE_PR_OPEN" != "true" ] && [ "$upstream" = "pass" ] && [ "$wire_exit" = 0 ]; then\n            carry=(--carry-range)'));
-  check('the flag is passed to the release prep', (rebake ?? '').includes('new_version=$(node scripts/rebake-release-prep.mjs "${carry[@]}")'));
-  check('both checks have run by then', (rebake ?? '').indexOf('upstream=$(node -p') < (rebake ?? '').indexOf('carry=(--carry-range)') && (rebake ?? '').indexOf('wire_exit=$?') < (rebake ?? '').indexOf('carry=(--carry-range)'));
+  const step = rebake ?? '';
+  check('the wire-drift check measures the pinned binary, and the system one only when the run has none',
+    step.includes('if [ -z "${DARIO_CLAUDE_BIN:-}" ] && [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi')
+    && !step.includes('\n          if [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN'));
+  const decide = step.indexOf('node scripts/range-bump-carrier.mjs may-carry');
+  check('the carry decision is mayCarry\'s, fed this run\'s results',
+    decide > 0 && step.includes('carry_verdict=$(GH_TOKEN="$STATUS_TOKEN" RANGE_PR_OPEN="$RANGE_PR_OPEN" UPSTREAM="$upstream" WIRE_EXIT="$wire_exit" \\\n            WIRE_REPORT=wire-drift-report.json BAKED_VERSION="$cc_version" \\\n            node scripts/range-bump-carrier.mjs may-carry'));
+  check('a decision that cannot be made is a no', step.includes('may-carry || echo \'{"carry":false,"reason":"the decision could not be made"}\')'));
+  check('the flag is set from that decision and nowhere else', step.split('carry=(--carry-range)').length - 1 === 1
+    && /\.carry === true' 2>\/dev\/null\)" = "true" \]; then\n\s+carry=\(--carry-range\)/.test(step));
+  check('the flag is passed to the release prep', step.includes('new_version=$(node scripts/rebake-release-prep.mjs "${carry[@]}")'));
+  const known = ['upstream=$(node -p', 'wire_exit=$?', 'cc_version=$(node -p "require(\'./src/cc-template-data.json\')._version")'];
+  check('the upstream check, the wire-drift check and the baked version are all known by then', known.every((k) => step.indexOf(k) > 0 && step.indexOf(k) < decide), known.map((k) => step.indexOf(k)).join(','));
   check('the files the bump changes are staged', /git add src\/cc-template-data\.json package\.json package-lock\.json CHANGELOG\.md src\/live-fingerprint\.ts test\/compat-pinned\.json\n/.test(rebake ?? ''));
   check('the step is told whether a CC version PR is open', (rebake ?? '').includes('RANGE_PR_OPEN: ${{ steps.range_pr.outputs.open }}'));
 

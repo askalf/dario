@@ -1,29 +1,35 @@
 #!/usr/bin/env node
 /**
- * One release for a Claude Code version whose prompt or tools changed.
+ * The decisions behind "a template rebake carries the maxTested bump".
  *
- * A new Claude Code version used to ship as two dario releases half an hour
- * apart: cc-drift-watch.yml moved SUPPORTED_CC_RANGE.maxTested, and once that
- * merge had brought the self-hosted runner up to the new version,
- * cc-drift-template-watch.yml found the bundled template out of step and
- * shipped a rebake. Now cc-drift-watch.yml asks the template watcher first:
- * it dispatches it for the new version, waits for that run, and drafts its own
- * PR only when no rebake PR came out of it. A rebake PR captured from the new
- * version moves maxTested itself (scripts/rebake-release-prep.mjs), so one PR
- * and one release carry both.
+ * cc-drift-watch.yml dispatches cc-drift-template-watch.yml for a new Claude
+ * Code version before it drafts a maxTested bump, and drafts nothing when a
+ * rebake PR carries the bump (docs/drift-monitor.md, "One release for a new
+ * Claude Code version"). This file holds what the two workflows decide:
  *
- * Every way this can fail to find a rebake PR ends in the PR cc-drift-watch
- * drafted before this file existed: no dispatch, a run that never shows up, a
- * run that is still going at the deadline, an upstream check with no verdict.
+ *   find         which open rebake PR, if any, claims the version as tested
+ *   await        the state of the template watcher run dispatched for it
+ *   pick-binary  which installed `claude` reports exactly that version
+ *   may-carry    whether a rebake may move maxTested itself
+ *
+ * Each answer that cannot be established is the conservative one: no carrier,
+ * no run, no binary, do not carry. In every such case cc-drift-watch.yml
+ * drafts the bump itself, as it does when no rebake is needed.
  *
  *   node scripts/range-bump-carrier.mjs find <X.Y.Z>
  *   node scripts/range-bump-carrier.mjs await <X.Y.Z> <since ISO time> [seconds]
+ *   node scripts/range-bump-carrier.mjs pick-binary <X.Y.Z> <path>...
+ *   node scripts/range-bump-carrier.mjs may-carry
  *
- * Both print one JSON object and exit 0. `find`: {"carried":bool,"pr":N|null}.
- * `await`: {"found":bool,"completed":bool,"conclusion":string|null,"run":id|null}.
- * A usage error exits 2.
+ * `find` prints {"carried":bool,"pr":N|null}; `await` prints
+ * {"found":bool,"completed":bool,"conclusion":string|null,"run":id|null};
+ * `pick-binary` prints the path, or nothing; `may-carry` prints
+ * {"carry":bool,"reason":string} from RANGE_PR_OPEN, UPSTREAM, WIRE_EXIT,
+ * WIRE_REPORT (a file) and BAKED_VERSION in the environment. All exit 0; a
+ * usage error exits 2.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { isOlderThan } from './_drift-patch-helpers.mjs';
@@ -32,6 +38,13 @@ export const TEMPLATE_WATCH = 'cc-drift-template-watch.yml';
 export const REBAKE_HEAD = /^bot\/template-rebake-/;
 /** Where maxTested lives; the file a rebake PR changes to carry the bump. */
 export const RANGE_FILE = 'src/live-fingerprint.ts';
+/**
+ * The label and title prefix of a wire-drift report (wire-drift-self-hosted.yml
+ * files it, and the template watcher does when its own check fails). The merge
+ * gate holds every rebake while one is open, whatever this run's check found.
+ */
+export const WIRE_DRIFT_LABEL = 'cc-drift';
+export const WIRE_DRIFT_TITLE_PREFIX = 'Wire drift detected';
 
 export const isPlainVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
 
@@ -104,19 +117,139 @@ export async function awaitRun({ listRuns, ccVersion, sinceMs, timeoutMs, interv
   return { found: run !== null, completed: false, conclusion: null, run: run?.databaseId ?? null };
 }
 
+/**
+ * The first of `paths` whose `claude` reports exactly `wanted`, or null.
+ *
+ * The self-hosted runner holds more than one install: the system one and a
+ * copy under the tool-cache Node that actions/setup-node puts first on PATH.
+ * They can be versions apart. A run dispatched for a version has to capture,
+ * bake and check wire drift with one binary, and it has to be the one at that
+ * version, so the binary is chosen by what it reports and not by PATH order.
+ * `versionOf(path)` returns the version a path reports, or null (missing, not
+ * runnable). Empty and repeated paths are skipped.
+ */
+export function pickBinary(paths, versionOf, wanted) {
+  if (!isPlainVersion(wanted)) return null;
+  const seen = new Set();
+  for (const p of Array.isArray(paths) ? paths : []) {
+    if (typeof p !== 'string' || p === '' || seen.has(p)) continue;
+    seen.add(p);
+    let v = null;
+    try { v = versionOf(p); } catch { v = null; }
+    if (v === wanted) return p;
+  }
+  return null;
+}
+
+/** The Claude Code version a wire-drift report measured, or null. The report may follow log lines. */
+export function wireVersionOf(reportText) {
+  if (typeof reportText !== 'string') return null;
+  const at = reportText.search(/^\{/m);
+  try {
+    const v = JSON.parse(reportText.slice(at < 0 ? 0 : at)).ccVersion;
+    return isPlainVersion(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How many open issues are wire-drift reports. Pull requests listed among issues are not. */
+export function openWireIssueCount(issues) {
+  if (!Array.isArray(issues)) return null;
+  return issues.filter((i) => i && i.pull_request == null && String(i.title ?? '').startsWith(WIRE_DRIFT_TITLE_PREFIX)).length;
+}
+
+/**
+ * Whether a rebake may move maxTested itself (rebake-release-prep.mjs
+ * --carry-range). A carrying rebake is the only PR for the bump, so it has to
+ * be one that merges unattended, and the claim it makes has to be about the
+ * version that was measured:
+ *
+ *   - no PR of cc-drift-watch.yml's own is open for a bump;
+ *   - upstream accepted requests rebuilt from the bundle;
+ *   - the wire-drift check passed, on the same Claude Code version the bundle
+ *     was captured from (two installs on the runner can differ);
+ *   - no wire-drift issue is open, since the merge gate holds a rebake for an
+ *     open one even when this run's check is clean.
+ *
+ * Anything unread or unknown counts against carrying. Pure.
+ */
+export function mayCarry({ rangePrOpen, upstream, wireExit, wireVersion, bakedVersion, openWireIssues }) {
+  const no = (reason) => ({ carry: false, reason });
+  if (rangePrOpen !== false) return no('a CC version PR is open (or could not be listed) and moves maxTested itself');
+  if (upstream !== 'pass') return no(`the upstream check did not pass (${upstream || 'no verdict'}), so this rebake waits for a person`);
+  if (wireExit !== 0) return no(`the wire-drift check failed (exit ${wireExit}), so this rebake waits for its issue to close`);
+  if (!isPlainVersion(bakedVersion)) return no('the bundle does not name the Claude Code version it was captured from');
+  if (wireVersion !== bakedVersion) {
+    return no(`the wire-drift check measured Claude Code ${wireVersion ?? 'an unknown version'}, not the ${bakedVersion} the bundle was captured from`);
+  }
+  if (openWireIssues !== 0) {
+    return no(openWireIssues === null
+      ? 'the open wire-drift issues could not be read'
+      : `${openWireIssues} wire-drift issue${openWireIssues === 1 ? ' is' : 's are'} open, and the merge gate holds a rebake until none is`);
+  }
+  return { carry: true, reason: `upstream and wire drift are clean for Claude Code ${bakedVersion}, and no other PR moves maxTested` };
+}
+
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
 }
 
+/** The version `<path> --version` prints first ("2.1.323 (Claude Code)"), or null. */
+function reportedVersion(path) {
+  try {
+    const out = execFileSync(path, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20_000 });
+    const first = out.trim().split(/\s+/)[0];
+    return isPlainVersion(first) ? first : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main(argv) {
-  const [cmd, ccVersion, ...rest] = argv;
+  const [cmd, ...rest] = argv;
   const repo = process.env.GITHUB_REPOSITORY;
   const usage = () => {
-    process.stderr.write('usage: range-bump-carrier.mjs find <X.Y.Z> | await <X.Y.Z> <since ISO time> [seconds]\n');
+    process.stderr.write('usage: range-bump-carrier.mjs find <X.Y.Z> | await <X.Y.Z> <since ISO time> [seconds] | pick-binary <X.Y.Z> <path>... | may-carry\n');
     process.exit(2);
   };
-  if (!isPlainVersion(ccVersion) || !repo) usage();
 
+  if (cmd === 'may-carry') {
+    const env = process.env;
+    let reportText = null;
+    try { reportText = readFileSync(env.WIRE_REPORT ?? '', 'utf-8'); } catch { reportText = null; }
+    let openWireIssues = null;
+    if (repo) {
+      try {
+        openWireIssues = openWireIssueCount(JSON.parse(gh(['issue', 'list', '--repo', repo, '--label', WIRE_DRIFT_LABEL,
+          '--state', 'open', '--limit', '100', '--json', 'title'])));
+      } catch {
+        openWireIssues = null;
+      }
+    }
+    const wireExit = /^\d+$/.test(env.WIRE_EXIT ?? '') ? Number(env.WIRE_EXIT) : null;
+    process.stdout.write(JSON.stringify(mayCarry({
+      // The workflow step writes 'true' or nothing; anything else is unknown.
+      rangePrOpen: env.RANGE_PR_OPEN === '' ? false : env.RANGE_PR_OPEN === 'true' ? true : null,
+      upstream: env.UPSTREAM ?? '',
+      wireExit,
+      wireVersion: wireVersionOf(reportText),
+      bakedVersion: env.BAKED_VERSION ?? '',
+      openWireIssues,
+    })) + '\n');
+    return;
+  }
+
+  const ccVersion = rest.shift();
+  if (!isPlainVersion(ccVersion)) usage();
+
+  if (cmd === 'pick-binary') {
+    const bin = pickBinary(rest, reportedVersion, ccVersion);
+    if (bin !== null) process.stdout.write(bin + '\n');
+    return;
+  }
+
+  if (!repo) usage();
   if (cmd === 'find') {
     const prs = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--search', 'head:bot/template-rebake-',
       '--json', 'number,headRefName,headRefOid,isCrossRepository']));

@@ -102,18 +102,28 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
-      - name: Bring the runner's Claude Code up to the dispatched version
-        # The runner otherwise reaches a new Claude Code version only after the
-        # maxTested bump for it has merged (compat-test-self-hosted.yml installs
-        # the claimed version) or at the host's daily update. This run was
-        # dispatched to look at the new version before that bump is drafted.
+      - name: Pin this run to the dispatched Claude Code version
+        # A run dispatched for a Claude Code version has to look at that
+        # version. The runner otherwise reaches it only after the maxTested bump
+        # has merged (compat-test-self-hosted.yml installs the claimed version)
+        # or at the host's daily update.
         #
-        # Same shape as the compat step it stands in for: upgrade only, the
-        # version checked as a bare x.y.z before it reaches npm, and never
-        # fatal. It also has to be the version npm serves as latest, so a
-        # dispatch cannot move this credentialed runner to anything else. When
-        # nothing is installed here, the check below runs on the old version and
-        # cc-drift-watch.yml drafts its own PR, as it did before.
+        # The runner holds more than one install: the system /usr/bin/claude,
+        # and a copy under the tool-cache Node that actions/setup-node puts
+        # first on PATH, which is where `npm i -g` lands. They can be versions
+        # apart (wire-drift-self-hosted.yml has the history). So this step does
+        # not rely on PATH: it finds the binary that reports exactly the
+        # dispatched version, installing it when none does, and names it in
+        # DARIO_CLAUDE_BIN for the rest of the job. The check, the bake and the
+        # wire-drift check below then all measure that one binary. The system
+        # install is never touched.
+        #
+        # Only a bare x.y.z that npm serves as latest is installed, so a
+        # dispatch cannot move this credentialed runner to anything else, and
+        # an install that is already past it is left alone. Never fatal: with
+        # no binary pinned the run measures what is installed, the rebake
+        # carries no bump unless both checks measured one version, and
+        # cc-drift-watch.yml drafts its own PR as before.
         if: inputs.cc_version != ''
         env:
           # UNTRUSTED (a dispatch input): read through this variable only.
@@ -121,31 +131,38 @@ jobs:
         run: |
           set -uo pipefail
           if [[ ! "$WANTED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::notice::the dispatched version is not a bare x.y.z, so the runner is left alone"
+            echo "::notice::the dispatched version is not a bare x.y.z, so the run is not pinned"
             exit 0
           fi
           latest="$(npm view @anthropic-ai/claude-code dist-tags.latest 2>/dev/null || true)"
           if [ "$WANTED" != "$latest" ]; then
-            echo "::notice::dispatched for $WANTED but npm latest is ${latest:-<unreadable>}, so the runner is left alone"
+            echo "::notice::dispatched for $WANTED but npm latest is ${latest:-<unreadable>}, so the run is not pinned"
             exit 0
           fi
-          installed="$(claude --version 2>/dev/null | awk '{print $1}' || true)"
-          echo "dispatched for $WANTED, installed CC=${installed:-<none>}"
-          if [ -z "$installed" ]; then
-            echo "::notice::cannot read the installed version, so the runner is left alone"
+          prefix_bin="$(npm prefix -g 2>/dev/null || true)/bin/claude"
+          pick() {
+            node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$prefix_bin" /usr/bin/claude "$(command -v claude 2>/dev/null || true)" 2>/dev/null || true
+          }
+          bin="$(pick)"
+          if [ -z "$bin" ]; then
+            have="$("$prefix_bin" --version 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$WANTED" "$have" | sort -V | tail -1)" != "$WANTED" ]; then
+              echo "::notice::the install at $prefix_bin reports $have, past $WANTED, so nothing is installed and the run is not pinned"
+              exit 0
+            fi
+            echo "no installed Claude Code reports $WANTED (this prefix has ${have:-none}); installing it"
+            if ! npm i -g "@anthropic-ai/claude-code@${WANTED}" >/dev/null 2>&1; then
+              echo "::warning::npm could not install @anthropic-ai/claude-code@${WANTED}; the run is not pinned"
+              exit 0
+            fi
+            bin="$(pick)"
+          fi
+          if [ -z "$bin" ]; then
+            echo "::warning::$WANTED was installed but no binary reports it; the run is not pinned"
             exit 0
           fi
-          if [ "$(printf '%s\n%s\n' "$WANTED" "$installed" | sort -V | tail -1)" = "$installed" ]; then
-            echo "runner already at or ahead of $WANTED"
-            exit 0
-          fi
-          if npm i -g "@anthropic-ai/claude-code@${WANTED}" >/dev/null 2>&1; then
-            now="$(claude --version 2>/dev/null | awk '{print $1}' || true)"
-            echo "runner CC now: ${now:-<unreadable>}"
-            [ "$now" = "$WANTED" ] || echo "::warning::the upgrade ran but the version reads ${now:-<unreadable>}"
-          else
-            echo "::warning::npm could not install @anthropic-ai/claude-code@${WANTED}; the check runs on $installed"
-          fi
+          echo "this run captures, bakes and checks wire drift with $bin (Claude Code $WANTED)"
+          echo "DARIO_CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
 
       - name: Pin OAuth credential to platform-dario canonical (sole-refresher)
         # The platform dario container is the SOLE refresher of the shared Max
@@ -510,9 +527,10 @@ jobs:
           # "Wire drift detected" issue is open, so a failed check is filed here, before the gate can
           # read the PR. A nonzero exit is any high-severity finding (betaForModel, cch gate, header
           # set or values, body order, a failed capture) or a check that did not run; the report's
-          # findings say which. Same binary as wire-drift-self-hosted.yml, the one the box deploys.
-          # The bundle does not change betaForModel's result.
-          if [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
+          # findings say which. Same binary as wire-drift-self-hosted.yml, the one the box deploys,
+          # unless this run was pinned to a dispatched version above: then it is that binary, the
+          # one the bake just captured from. The bundle does not change betaForModel's result.
+          if [ -z "${DARIO_CLAUDE_BIN:-}" ] && [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
           set +e
           node scripts/check-wire-drift.mjs > wire-drift-report.json 2> wire-drift-log.txt
           wire_exit=$?
@@ -559,12 +577,18 @@ jobs:
           #
           # A bake captured from a Claude Code version past maxTested moves
           # maxTested too (--carry-range), so this PR is the one release for
-          # that version. Not when cc-drift-watch.yml has its own PR open for
-          # the bump, and not when this PR will wait on a person or on an open
-          # wire-drift issue: the bump would wait with it, so it is left to
+          # that version. Only when it will merge unattended and the claim is
+          # about the version both checks measured: mayCarry in
+          # scripts/range-bump-carrier.mjs lists the conditions, and reads the
+          # open wire-drift issues itself, since the merge gate holds a rebake
+          # for one that an earlier run left open. Otherwise the bump is left to
           # cc-drift-watch.yml's PR, which merges on its own.
           carry=()
-          if [ "$RANGE_PR_OPEN" != "true" ] && [ "$upstream" = "pass" ] && [ "$wire_exit" = 0 ]; then
+          carry_verdict=$(GH_TOKEN="$STATUS_TOKEN" RANGE_PR_OPEN="$RANGE_PR_OPEN" UPSTREAM="$upstream" WIRE_EXIT="$wire_exit" \
+            WIRE_REPORT=wire-drift-report.json BAKED_VERSION="$cc_version" \
+            node scripts/range-bump-carrier.mjs may-carry || echo '{"carry":false,"reason":"the decision could not be made"}')
+          echo "carry the maxTested bump: $carry_verdict"
+          if [ "$(printf '%s' "$carry_verdict" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).carry === true' 2>/dev/null)" = "true" ]; then
             carry=(--carry-range)
           fi
           new_version=$(node scripts/rebake-release-prep.mjs "${carry[@]}")

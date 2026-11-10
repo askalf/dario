@@ -147,8 +147,13 @@ Now `cc-drift-watch.yml` asks the template watcher before it drafts anything.
 It dispatches `cc-drift-template-watch.yml` with the new version as
 `cc_version` and waits up to ten minutes for that run:
 
-- The run brings the runner up to the version. Only a bare `x.y.z` that npm
-  serves as `latest` is installed, and only as an upgrade.
+- The run pins itself to a `claude` that reports exactly that version,
+  installing it when none does, and names it in `DARIO_CLAUDE_BIN`. The
+  runner holds more than one install (the system one, and a copy under the
+  tool-cache Node), so the check, the bake and the wire-drift check are
+  pointed at one binary and do not depend on `PATH` order. Only a bare
+  `x.y.z` that npm serves as `latest` is installed, and the system install is
+  never touched.
 - **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
   the version in `test/compat-pinned.json` and carries the release note for
   the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`
@@ -157,9 +162,19 @@ It dispatches `cc-drift-template-watch.yml` with the new version as
   the dispatched run, and `cc-drift-watch.yml` drafts its own PR, which moves
   `maxTested` and the label together as before.
 
-A rebake carries the bump only when it can merge unattended: the upstream
-check passed, the wire-drift check is clean, and no `bot/cc-drift-v*` PR is
-open. Otherwise the bump is left to `cc-drift-watch.yml`'s PR. A dispatch that
+A rebake carries the bump only when it can merge unattended and the claim is
+about the version that was measured (`mayCarry` in
+`scripts/range-bump-carrier.mjs`):
+
+- no `bot/cc-drift-v*` PR is open;
+- the upstream check passed;
+- the wire-drift check passed, on the same Claude Code version the bundle was
+  captured from;
+- no `Wire drift detected` issue is open. The merge gate holds every rebake
+  while one is, including one an earlier run filed, so a clean check in this
+  run is not enough.
+
+Otherwise the bump is left to `cc-drift-watch.yml`'s PR. A dispatch that
 fails, a run that does not finish in time, and an upstream check with no
 verdict all end the same way, in the two PRs this replaced.
 
