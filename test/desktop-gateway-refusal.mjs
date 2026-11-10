@@ -66,7 +66,15 @@ const fakeFetch = async (url, init) => {
   const raw = init?.headers;
   if (Array.isArray(raw)) for (const [k, v] of raw) h[String(k).toLowerCase()] = String(v);
   else if (raw && typeof raw === 'object') for (const [k, v] of Object.entries(raw)) h[String(k).toLowerCase()] = String(v);
-  anthropic.last = { url: target, headers: h };
+  // Only which credential rode the request is kept, never its value, so a
+  // failing check has nothing secret-shaped to print.
+  anthropic.last = {
+    url: target,
+    onKey: h['x-api-key'] === 'sk-ant-test-key',
+    onPlanToken: h.authorization === 'Bearer claude-access-token',
+    hasKeyHeader: h['x-api-key'] !== undefined,
+    hasBearer: h.authorization !== undefined,
+  };
   if (target.includes('/count_tokens')) {
     return new Response(JSON.stringify({ input_tokens: 3 }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
@@ -156,8 +164,8 @@ header('served: upstream API-key mode forwards it on the key');
   check('→ 200, no marker', r.status === 200 && r.marker === null, show(r));
   check('the request went upstream', anthropic.calls === before + 1, `calls ${before} → ${anthropic.calls}`);
   check('on the API key, with no bearer token',
-    anthropic.last?.headers['x-api-key'] === 'sk-ant-test-key' && anthropic.last?.headers.authorization === undefined,
-    JSON.stringify({ key: anthropic.last?.headers['x-api-key'], auth: anthropic.last?.headers.authorization }));
+    anthropic.last?.onKey === true && anthropic.last?.hasBearer === false,
+    `onKey=${anthropic.last?.onKey} hasBearer=${anthropic.last?.hasBearer}`);
 }
 
 header('served: every other client on the same plan-login proxy');
@@ -173,8 +181,8 @@ header('served: every other client on the same plan-login proxy');
     const r = await post(PLAN_PORT, '/v1/messages', body, ua);
     check(`${name} → 200`, r.status === 200 && r.marker === null, show(r));
     check(`${name} reached the pool on the plan token`,
-      anthropic.calls === before + 1 && anthropic.last?.headers.authorization === 'Bearer claude-access-token',
-      `calls ${before} → ${anthropic.calls} auth=${anthropic.last?.headers.authorization}`);
+      anthropic.calls === before + 1 && anthropic.last?.onPlanToken === true && anthropic.last?.hasKeyHeader === false,
+      `calls ${before} → ${anthropic.calls} onPlanToken=${anthropic.last?.onPlanToken} hasKeyHeader=${anthropic.last?.hasKeyHeader}`);
   }
 }
 
