@@ -49,6 +49,12 @@ export interface RequestRecord {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /**
+   * Of cacheCreateTokens, the ones written to the one-hour cache: a share and
+   * never an addition. They bill at 2x input where a five-minute write is
+   * 1.25x. Absent on a response that gives no breakdown, which reads as 0.
+   */
+  cacheCreate1hTokens?: number;
   thinkingTokens: number;
   claim: string;
   util5h: number;
@@ -338,7 +344,22 @@ export function isNonSubscriptionBilling(claim: string | null | undefined): bool
 
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
-export interface Rate { input: number; output: number; cacheRead: number; cacheCreate: number }
+/** The four buckets every price list carries. `cacheCreate` is the five-minute cache write. */
+export interface BaseRate { input: number; output: number; cacheRead: number; cacheCreate: number }
+/** A rate with the one-hour cache write, which Anthropic's table lists in a column of its own. */
+export interface Rate extends BaseRate { cacheCreate1h: number }
+/**
+ * One request's or one ledger cell's tokens, as a price list reads them.
+ * `cacheCreateTokens` is every cache-write token; `cacheCreate1hTokens` is
+ * the share of them written to the one-hour cache, 0 when absent.
+ */
+export interface PricedTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  cacheCreate1hTokens?: number;
+}
 interface PricingEntry extends Rate {
   /**
    * Optional promotional pricing in effect through `until` (inclusive, UTC
@@ -379,34 +400,34 @@ export const PRICING: Record<string, PricingEntry> = {
   // Fable 5 — official pricing (published with the 2026-07-01 redeploy):
   // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
   // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
-  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5, cacheCreate1h: 20 },
   // Fable 5.1 kept $10/$50 and cut cache reads to $0.25: 0.025x input, where
   // Fable 5 is 0.1x. Fable 5.2 is $8/$40 with the same 0.025x, so $0.20. Not
   // derived rows; copy the table.
-  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
-  'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10 },
+  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5, cacheCreate1h: 20 },
+  'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10, cacheCreate1h: 16 },
   // Mythos is the same model as the Fable of its version without the added
   // safeguards, at the same prices, for verified organizations only.
-  'claude-mythos-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
-  'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
-  'claude-mythos-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10 },
+  'claude-mythos-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5, cacheCreate1h: 20 },
+  'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5, cacheCreate1h: 20 },
+  'claude-mythos-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10, cacheCreate1h: 16 },
   // Opus 5 ships at the Opus 4.8 rate — $5/$25, no long-context premium. (Its
   // fast-mode tier is $10/$50, but that rides `speed:"fast"` on the API path,
   // which the subscription surface dario proxies never sends.)
-  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25, cacheCreate1h: 10 },
   // Opus 5.5 (2026-09-22) is the first Opus cheaper than the one before it: $4/$20,
   // 5m cache-write $5, and cache-read $0.20 — 0.05x input where every other model
   // is 0.1x (the pricing page footnotes it). Not a derived row; copy the table.
-  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheCreate: 5 },
-  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-  'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheCreate: 5, cacheCreate1h: 8 },
+  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25, cacheCreate1h: 10 },
+  'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25, cacheCreate1h: 10 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.
-  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25, cacheCreate1h: 10 },
   // Still served, and the model catalog lists it (as claude-opus-4-5-20251101).
-  'claude-opus-4-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  'claude-opus-4-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25, cacheCreate1h: 10 },
   // Sonnet 5.5 is Sonnet 5's $2/$10 with cache reads at $0.10: 0.05x input,
   // the same footnote as Opus 5.5.
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5, cacheCreate1h: 4 },
   // Sonnet 5 is $2/$10 — PERMANENTLY. This shipped as "introductory pricing
   // through 2026-08-31, then $3/$15", and was modeled here as a dated cutover.
   // Anthropic has since cancelled that increase and made $2/$10 the standard
@@ -416,23 +437,23 @@ export const PRICING: Record<string, PricingEntry> = {
   //
   // Left as a flat rate rather than an `intro` whose `until` sits far in the
   // future — a date nobody is watching is exactly what caused this.
-  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
-  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5, cacheCreate1h: 4 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75, cacheCreate1h: 6 },
   // Deprecated and still served; the model catalog lists it (as
   // claude-sonnet-4-5-20250929). The same rate as the fallback, but a row of
   // its own keeps a key budget from holding it at the highest rate.
-  'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+  'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75, cacheCreate1h: 6 },
   // Haiku 5.5 is the one model priced by prompt length: $0.10/$0.50 up to
   // 100,000 prompt tokens, and five times that on every bucket for a request
   // over it. pricingModelForRequest picks the row; a sum of requests cannot.
   'claude-haiku-5-5': {
-    input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125,
-    longPrompt: { over: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 },
+    input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125, cacheCreate1h: 0.2,
+    longPrompt: { over: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625, cacheCreate1h: 1 },
   },
   // Haiku 4.5 is $1/$5. This carried $0.80/$4 — Haiku 3.5's row, copied
   // wholesale including its cache rates — so every Haiku 4.5 cost read ~20%
   // LOW. Found by check-pricing-drift.mjs on its very first run (#1048).
-  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25 },
+  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25, cacheCreate1h: 2 },
 };
 
 /**
@@ -452,7 +473,7 @@ export const PRICING: Record<string, PricingEntry> = {
  * a ChatGPT-plan request showed up in "would-be API cost" at Anthropic's
  * rate for a model Anthropic does not sell.
  */
-export const OPENAI_PRICING: Record<string, Rate> = {
+export const OPENAI_PRICING: Record<string, BaseRate> = {
   'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
   // The 6.1 pair reads its cache at 0.05x input, where every other row here
   // is 0.1x. Unlisted, both took gpt-5.6-terra's $2/$12: twice gpt-6.1-terra's
@@ -480,6 +501,18 @@ export type PricingProvider = 'anthropic' | 'openai';
  * starts `gpt-`; the rest of the pattern covers the older OpenAI families a
  * `--model-alias` might name. Anything else is priced as Claude.
  */
+/**
+ * Of a response's cache-write tokens, how many went to the one-hour cache:
+ * `usage.cache_creation.ephemeral_1h_input_tokens`, the breakdown of
+ * `cache_creation_input_tokens` by TTL. 0 when the usage block carries no
+ * breakdown, which prices every write at the five-minute rate.
+ */
+export function cacheCreate1hFromUsage(usage: unknown): number {
+  const detail = (usage as { cache_creation?: unknown } | null | undefined)?.cache_creation;
+  const n = (detail as { ephemeral_1h_input_tokens?: unknown } | null | undefined)?.ephemeral_1h_input_tokens;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export function providerOfModel(model: string): PricingProvider {
   return /^(gpt-|o\d|codex|chatgpt)/i.test(model) ? 'openai' : 'anthropic';
 }
@@ -503,18 +536,19 @@ export function pricingRateFor(model: string, atMs: number): Rate {
   const baseModel = pricingBaseModel(model);
   if (model.endsWith(LONG_PROMPT_TAG)) {
     const long = Object.hasOwn(PRICING, baseModel) ? PRICING[baseModel]!.longPrompt : undefined;
-    if (long) return { input: long.input, output: long.output, cacheRead: long.cacheRead, cacheCreate: long.cacheCreate };
+    if (long) return { input: long.input, output: long.output, cacheRead: long.cacheRead, cacheCreate: long.cacheCreate, cacheCreate1h: long.cacheCreate1h };
   }
   if (providerOfModel(baseModel) === 'openai') {
     const rate = OPENAI_PRICING[baseModel] ?? OPENAI_PRICING[OPENAI_FALLBACK_MODEL]!;
-    return { ...rate };
+    // OpenAI's table has one cache-write price and no one-hour cache.
+    return { ...rate, cacheCreate1h: rate.cacheCreate };
   }
   const entry = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
   if (entry.intro && atMs <= Date.parse(`${entry.intro.until}T23:59:59.999Z`)) {
     const { until: _until, ...introRate } = entry.intro;
     return introRate;
   }
-  return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
+  return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate, cacheCreate1h: entry.cacheCreate1h };
 }
 
 /**
@@ -558,7 +592,7 @@ export function pricingModelForRequest(
 export function costOfRequest(
   model: string,
   atMs: number,
-  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  t: PricedTokens,
 ): number {
   return costOfTokens(pricingModelForRequest(model, t), atMs, t);
 }
@@ -570,7 +604,7 @@ export function costOfRequest(
  * let spend through.
  */
 export function highestPublishedRate(): Rate {
-  const rates: Rate[] = [...Object.values(OPENAI_PRICING)];
+  const rates: Rate[] = Object.values(OPENAI_PRICING).map((r) => ({ ...r, cacheCreate1h: r.cacheCreate }));
   for (const e of Object.values(PRICING)) {
     rates.push(e);
     if (e.intro) rates.push(e.intro);
@@ -581,6 +615,7 @@ export function highestPublishedRate(): Rate {
     output: Math.max(...rates.map((r) => r.output)),
     cacheRead: Math.max(...rates.map((r) => r.cacheRead)),
     cacheCreate: Math.max(...rates.map((r) => r.cacheCreate)),
+    cacheCreate1h: Math.max(...rates.map((r) => r.cacheCreate1h)),
   };
 }
 
@@ -595,16 +630,33 @@ export function highestPublishedRate(): Rate {
 export function costOfTokensFailClosed(
   model: string,
   atMs: number,
-  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  t: PricedTokens,
 ): number {
   const id = model.toLowerCase();
   if (hasPublishedRate(id)) return costOfRequest(id, atMs, t);
-  const p = highestPublishedRate();
-  return ((t.inputTokens * p.input) + (t.outputTokens * p.output) + (t.cacheReadTokens * p.cacheRead) + (t.cacheCreateTokens * p.cacheCreate)) / 1_000_000;
+  return usdAt(highestPublishedRate(), t);
 }
 
 /**
- * USD the four token buckets would bill at `model`'s rate in effect at `atMs`.
+ * USD `t` bills at rate `p`. The one-hour share of the cache writes is
+ * priced at the one-hour rate and the rest at the five-minute rate; a share
+ * larger than the writes it is a share of is held to them.
+ */
+function usdAt(p: Rate, t: PricedTokens): number {
+  const raw = t.cacheCreate1hTokens;
+  const write1h = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.min(raw, t.cacheCreateTokens) : 0;
+  return (
+    (t.inputTokens * p.input) +
+    (t.outputTokens * p.output) +
+    (t.cacheReadTokens * p.cacheRead) +
+    ((t.cacheCreateTokens - write1h) * p.cacheCreate) +
+    (write1h * p.cacheCreate1h)
+  ) / 1_000_000;
+}
+
+/**
+ * USD the token buckets would bill at `model`'s rate in effect at `atMs`,
+ * one-hour cache writes at their own rate.
  * The ledger prices its per-day rows through this too, so a pricing
  * correction reprices history instead of freezing the old number in.
  * It reads no prompt length: for one request use costOfRequest, which does.
@@ -612,15 +664,9 @@ export function costOfTokensFailClosed(
 export function costOfTokens(
   model: string,
   atMs: number,
-  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  t: PricedTokens,
 ): number {
-  const p = pricingRateFor(model, atMs);
-  return (
-    (t.inputTokens * p.input) +
-    (t.outputTokens * p.output) +
-    (t.cacheReadTokens * p.cacheRead) +
-    (t.cacheCreateTokens * p.cacheCreate)
-  ) / 1_000_000;
+  return usdAt(pricingRateFor(model, atMs), t);
 }
 
 function estimateCost(record: RequestRecord): number {
@@ -710,6 +756,7 @@ export class Analytics extends EventEmitter {
     outputTokens: number;
     cacheReadTokens: number;
     cacheCreateTokens: number;
+    cacheCreate1hTokens: number;
     thinkingTokens: number;
     model: string;
   } {
@@ -725,6 +772,7 @@ export class Analytics extends EventEmitter {
       outputTokens: u?.output_tokens ?? 0,
       cacheReadTokens: u?.cache_read_input_tokens ?? 0,
       cacheCreateTokens: u?.cache_creation_input_tokens ?? 0,
+      cacheCreate1hTokens: cacheCreate1hFromUsage(u),
       thinkingTokens,
       model: (body.model as string) ?? 'unknown',
     };

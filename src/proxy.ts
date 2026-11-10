@@ -22,7 +22,7 @@ import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { AccountSync, DEFAULT_ACCOUNT_SYNC_INTERVAL_MS } from './account-sync.js';
 import { CODEX_REGISTRY } from './codex-account-sync.js';
-import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, thinkingTokensFromUsage, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, cacheCreate1hFromUsage, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, thinkingTokensFromUsage, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, analyticsUiPage } from './donuts.js';
@@ -1513,6 +1513,8 @@ export interface ProxyLogEntry {
   out_tokens?: number;
   cache_read?: number;
   cache_create?: number;
+  /** Of cache_create, the tokens written to the one-hour cache. Present when there were any. */
+  cache_create_1h?: number;
   claim?: string;
   bucket?: string;
   account?: string;
@@ -6835,6 +6837,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         let streamOutputTokens = 0;
         let streamCacheReadTokens = 0;
         let streamCacheCreateTokens = 0;
+        let streamCacheCreate1hTokens = 0;
         let streamThinkingChars = 0;
         // The billed count from message_delta's usage.output_tokens_details,
         // when upstream sends it; the chars/4 estimate above is the fallback.
@@ -6934,6 +6937,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                       streamInputTokens = u.input_tokens ?? 0;
                       streamCacheReadTokens = u.cache_read_input_tokens ?? 0;
                       streamCacheCreateTokens = u.cache_creation_input_tokens ?? 0;
+                      streamCacheCreate1hTokens = cacheCreate1hFromUsage(u);
                     }
                   } else if (e.type === 'message_delta') {
                     const u = (e as { usage?: Record<string, number> }).usage;
@@ -7031,6 +7035,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
+            cacheCreate1hTokens: streamCacheCreate1hTokens,
             thinkingTokens: streamThinkingTokens ?? Math.round(streamThinkingChars / 4),
             claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI, timing: timingNow(),
@@ -7044,6 +7049,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: streamInputTokens, out_tokens: streamOutputTokens,
           cache_read: streamCacheReadTokens, cache_create: streamCacheCreateTokens,
+          ...(streamCacheCreate1hTokens > 0 ? { cache_create_1h: streamCacheCreate1hTokens } : {}),
           claim: creditsRung ? CREDITS_CLAIM : poolAccount?.rateLimit.claim,
           bucket: creditsRung ? 'credits' : (poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined),
           account: creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias,
@@ -7107,6 +7113,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
+              cacheCreate1hTokens: bufferedUsage.cacheCreate1hTokens,
               thinkingTokens: bufferedUsage.thinkingTokens,
               claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI, timing: timingNow(),
@@ -7121,6 +7128,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: bufferedUsage?.inputTokens, out_tokens: bufferedUsage?.outputTokens,
           cache_read: bufferedUsage?.cacheReadTokens, cache_create: bufferedUsage?.cacheCreateTokens,
+          ...(bufferedUsage && bufferedUsage.cacheCreate1hTokens > 0 ? { cache_create_1h: bufferedUsage.cacheCreate1hTokens } : {}),
           claim: creditsRung ? CREDITS_CLAIM : poolAccount?.rateLimit.claim,
           bucket: creditsRung ? 'credits' : (poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined),
           account: creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias,
