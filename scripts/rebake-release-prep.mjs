@@ -24,9 +24,12 @@
  * With --carry-range, a bake captured from a Claude Code version newer than
  * SUPPORTED_CC_RANGE.maxTested also moves maxTested to it, lists the version
  * in test/compat-pinned.json and files the release note for the bump, so the
- * rebake PR is the one release for that Claude Code version. The workflow
- * passes the flag unless cc-drift-watch.yml already has a PR open for the
- * bump. A version the bundle does not name as x.y.z, a source file without a
+ * rebake PR is the one release for that Claude Code version. Whether to pass
+ * the flag is the workflow's decision, made by mayCarry in
+ * scripts/range-bump-carrier.mjs: no bump PR of cc-drift-watch.yml's open, a
+ * passing upstream check, a passing wire-drift check on the version the
+ * bundle was captured from, and no wire-drift issue open. This script only
+ * applies it. A version the bundle does not name as x.y.z, a source file without a
  * maxTested line, and a maxTested already at or past the version all leave
  * the range alone.
  *

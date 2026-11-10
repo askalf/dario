@@ -46,7 +46,8 @@ export const RANGE_FILE = 'src/live-fingerprint.ts';
 export const WIRE_DRIFT_LABEL = 'cc-drift';
 export const WIRE_DRIFT_TITLE_PREFIX = 'Wire drift detected';
 
-export const isPlainVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
+/** A bare x.y.z and nothing after it: no suffix, no whitespace, no trailing newline. */
+export const isPlainVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+(?![\s\S])/.test(v);
 
 /**
  * The run name cc-drift-template-watch.yml takes when it is dispatched for a

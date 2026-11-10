@@ -43,7 +43,9 @@ header('maxTested as a branch claims it');
   check('numeric, not lexical: 2.1.99 is older than 2.1.100', !carriesRange(source('2.1.99'), '2.1.100') && carriesRange(source('2.1.100'), '2.1.99'));
   check('unreadable source carries nothing', !carriesRange(null, '2.1.323') && !carriesRange('', '2.1.323'));
   check('a version that is not x.y.z is never carried', !carriesRange(source('2.1.323'), 'unknown') && !carriesRange(source('2.1.323'), '2.1') && !carriesRange(source('2.1.323'), undefined));
-  check('isPlainVersion', isPlainVersion('2.1.323') && !isPlainVersion('v2.1.323') && !isPlainVersion('2.1.323 ') && !isPlainVersion('2.1.323\n') && !isPlainVersion(2));
+  check('isPlainVersion', isPlainVersion('2.1.323') && !isPlainVersion('v2.1.323') && !isPlainVersion('2.1.323 ') && !isPlainVersion(2));
+  check('a trailing newline, or a second line, is not a plain version', !isPlainVersion('2.1.323\n') && !isPlainVersion('2.1.323\r\n') && !isPlainVersion('2.1.323\n2.1.324') && !isPlainVersion('\n2.1.323'));
+  check('and such a value carries nothing and picks nothing', !carriesRange(source('2.1.323'), '2.1.323\n') && pickBinary(['/usr/bin/claude'], () => '2.1.323\n', '2.1.323\n') === null);
 }
 
 header('the rebake PR that carries the bump');
