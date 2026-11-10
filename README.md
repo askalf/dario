@@ -151,11 +151,7 @@ Security reports go to **security@askalf.org**, not a public issue: [SECURITY.md
 - [Claude Code wire drift](https://askalf.github.io/dario/drift-feed/): every change to what Claude Code sends on the wire, as the template watcher observed it; [RSS](https://askalf.github.io/dario/drift-feed/feed.xml) · [JSON Feed](https://askalf.github.io/dario/drift-feed/feed.json)
 
 - [#1017: Will my account get suspended? What is actually observable, and how to monitor it yourself](https://github.com/askalf/dario/discussions/1017)
-- [#183: Modifying Claude Code's system prompt doesn't change billing; stripping its constraints recovers 1.2–2.8× output](https://github.com/askalf/dario/discussions/183)
 - [#68: dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each wins)](https://github.com/askalf/dario/discussions/68)
-- [#14: Template replay: why we replay the shape instead of matching signals](https://github.com/askalf/dario/discussions/14)
-- [#13: Claude Code's request shape, documented](https://github.com/askalf/dario/discussions/13)
-- [#1: Rate-limit header analysis](https://github.com/askalf/dario/discussions/1)
 - [system-prompt-classifier-study.md](./docs/research/system-prompt-classifier-study.md), the measurements behind `--system-prompt=partial`
 
 ## Contributing
