@@ -4523,7 +4523,7 @@ Documentation: [`docs/system-prompt.md`](docs/system-prompt.md) for the user-fac
 
 ## [3.33.0] - 2026-04-30
 
-One new feature (`hands` client detection — unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research written up in [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md).
+One new feature (`hands` client detection, which unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research written up in [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md).
 
 PRs in this release: #170 (auto-release scheduled fallback), #171 (maintainer diagnostics), #173 (idempotency gate fix), #174 (hands identity detection), #175 (credential freshness fallthrough).
 
@@ -4558,10 +4558,10 @@ End-to-end verification of the bot-auto-merge → schedule-trigger → release p
 Three paired diagnostic scripts under `scripts/` that don't ship with the package and aren't invoked from CI. Used during the classifier research written up in [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md):
 
 - **`capture-full-body.mjs`** — captures the literal **values** CC wires on `/v1/messages` (effort, max_tokens, thinking config, model, etc.) — fields the existing `capture-and-bake.mjs` strips during `scrubTemplate`. Verifies CC's actual wire values against Anthropic's stated defaults in ~10s.
-- **`test-system-prompt-mods.mjs`** — A/B billing-classifier probe against system prompt mutations. 7-variant ladder showed all variants — including replacing CC's 27k-char system prompt with a 321-char custom one and adding a 4th block — route to `five_hour`. **System prompt content, length, and block count are not classifier inputs**.
+- **`test-system-prompt-mods.mjs`**: A/B billing-classifier probe against system prompt mutations. 7-variant ladder showed all variants (including replacing CC's 27k-char system prompt with a 321-char custom one and adding a 4th block) route to `five_hour`. **System prompt content, length, and block count are not classifier inputs**.
 - **`test-constraint-removal.mjs`** — A/B model behavior delta when CC's behavioral constraints are stripped. Confirmed removing prompt-level alignment reminders contributes <3% over partial strip (RLHF is doing the alignment work, not the prompt).
 
-Each script reads OAuth directly from `~/.claude/.credentials.json` — robust against stale `~/.dario/` state. Each `test-*` invocation dispatches real upstream requests (7 / 9 respectively) on the maintainer's Max plan; cost is negligible but worth knowing before running. [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md) is the public writeup.
+Each script reads OAuth directly from `~/.claude/.credentials.json`, robust against stale `~/.dario/` state. Each `test-*` invocation dispatches real upstream requests (7 / 9 respectively) on the maintainer's Max plan; cost is negligible but worth knowing before running. [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md) is the public writeup.
 
 ## [3.32.2] - 2026-04-29
 

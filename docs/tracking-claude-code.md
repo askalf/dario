@@ -1,6 +1,6 @@
 # It tracks a moving target
 
-Claude Code's request shape changes between releases — new betas, tool renames, per-model thinking configs — usually with no subscriber-facing note. dario doesn't *guess* that shape: it captures it live from your own installed `claude` binary on every startup, diffs it against each upstream release, and replays it faithfully. That's why your subscription routes the same through dario as it does through Claude Code itself: the request that leaves your machine *is* the shape your plan expects. Details: [wire-fidelity.md](wire-fidelity.md).
+Claude Code's request shape changes between releases (new betas, tool renames, per-model thinking configs), usually with no subscriber-facing note. dario doesn't *guess* that shape: it captures it live from your own installed `claude` binary on every startup, diffs it against each upstream release, and replays it faithfully. That's why your subscription routes the same through dario as it does through Claude Code itself: the request that leaves your machine *is* the shape your plan expects. Details: [wire-fidelity.md](wire-fidelity.md).
 
 <img src="../.github/readme/drift.jpg" alt="The installed claude binary feeds its request shape into dario. A timeline of Claude Code releases ends in a node flagged as drift." width="100%">
 
