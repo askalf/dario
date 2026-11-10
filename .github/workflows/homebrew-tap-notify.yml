@@ -1,0 +1,123 @@
+name: Homebrew tap notify
+
+# Tells askalf/homebrew-tap a release shipped, so `brew install
+# askalf/tap/dario` follows within minutes instead of on the tap's six-hourly
+# schedule. The tap does the work itself (reads npm, checks integrity and
+# provenance, opens a pull request); this event only starts it sooner.
+#
+# Runs after each run of the release workflow, not inside it: the wait for npm
+# below takes minutes, and the hosted instance's deploy starts when the
+# release run completes.
+#
+# Most release runs ship nothing (the workflow runs on every push to master
+# and hourly, and its gate exits when the version is already out). A run that
+# shipped leaves an artifact, `released-version`, holding the version. This
+# workflow reads it by the id of the run that triggered it, so it announces
+# exactly the runs that shipped, whatever ran before, after or beside them.
+#
+# No concurrency group: a group keeps one pending run, so a later run that has
+# nothing to announce would replace a pending one that has.
+
+on:
+  workflow_run:
+    workflows: ["Auto release on version bump"]
+    types: [completed]
+    branches: [master]
+
+permissions: {}
+
+jobs:
+  # Reads the release run's artifact with the workflow token. Kept apart from
+  # the job below so that token and the tap's never share a job.
+  shipped:
+    # Never from a fork, and only for a release run that succeeded: a release
+    # that failed partway is never announced.
+    if: github.repository == 'askalf/dario' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ${{ github.repository == 'askalf/dario' && fromJSON('["self-hosted","dario-exec"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+    steps:
+      - name: Read the version that run shipped
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::warning::no run id in the event; nothing is announced."
+            exit 0
+          fi
+          # Whatever cannot be read announces nothing: the tap's own schedule
+          # covers a release this misses.
+          if ! marker=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[] | select(.name == "released-version" and .expired == false)] | length'); then
+            echo "::warning::could not list the release run's artifacts, so nothing is announced; the tap picks a release up on its six-hourly schedule."
+            exit 0
+          fi
+          if [ "$marker" != "1" ]; then
+            echo "The release run shipped nothing ($RUN_URL)."
+            exit 0
+          fi
+          dir=$(mktemp -d)
+          trap 'rm -rf "$dir"' EXIT
+          if ! gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name released-version --dir "$dir"; then
+            echo "::warning::could not download released-version from the release run, so nothing is announced; the tap picks the release up on its six-hourly schedule."
+            exit 0
+          fi
+          version=$(tr -d '\r\n' < "$dir/released-version.txt" 2>/dev/null || true)
+          # The artifact is data from another run: only a plain version leaves this job.
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::released-version does not hold a plain version; nothing is announced."
+            exit 0
+          fi
+          echo "The release run shipped v$version ($RUN_URL)."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # No checkout, no actions, no workflow-token scopes: this job holds
+  # TAP_DISPATCH_TOKEN, a fine-grained token for askalf/homebrew-tap alone
+  # with Contents read and write (what the dispatch endpoint requires;
+  # GITHUB_TOKEN cannot dispatch to another repository). Without the secret
+  # the job ends with a notice. A failed dispatch turns this workflow red,
+  # never the release, which finished before this started.
+  notify:
+    needs: shipped
+    if: needs.shipped.outputs.version != ''
+    runs-on: ${{ github.repository == 'askalf/dario' && fromJSON('["self-hosted","dario-exec"]') || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: Send dario-release to askalf/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.shipped.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::TAP_DISPATCH_TOKEN is not set; the tap picks up v$VERSION on its six-hourly schedule."
+            exit 0
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::'$VERSION' is not a plain version; nothing is sent."
+            exit 0
+          fi
+          # The tap's bump reads `npm view @askalf/dario version`, which can
+          # trail the publish by minutes, and a bump that still reads the old
+          # version does nothing. Send the event only once npm reports this one.
+          latest=""
+          for _ in $(seq 1 40); do
+            latest="$(npm view @askalf/dario version 2>/dev/null || true)"
+            if [ "$latest" = "$VERSION" ]; then
+              break
+            fi
+            sleep 15
+          done
+          if [ "$latest" != "$VERSION" ]; then
+            echo "::warning::npm reports '$latest' as latest after 10 minutes, not $VERSION; the tap picks it up on its six-hourly schedule."
+            exit 0
+          fi
+          gh api --method POST repos/askalf/homebrew-tap/dispatches -f event_type=dario-release
+          echo "Sent dario-release for v$VERSION to askalf/homebrew-tap."
