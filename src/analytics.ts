@@ -205,7 +205,7 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
  * The `representative-claim` values that mean "billed against the subscription
  * pool" — the place dario exists to keep traffic. `five_hour`/`seven_day` and
  * their server-side `_fallback` variants are all subscription billing (see
- * `billingBucketFromClaim` + discussion #1). Anything else is either a
+ * `billingBucketFromClaim` and docs/faq.md). Anything else is either a
  * non-subscription billing classification or the `unknown` sentinel below.
  */
 export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
