@@ -13,6 +13,7 @@
 
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantThresholds } from './refresh-grant.js';
 import { maskEmail } from './pool.js';
+import { BAKED_BASE_MODELS, dropSuspendedModels, resolveFamilyBase } from './model-catalog.js';
 import { creditsEntries, withoutCreditsEntries } from './credits-rung.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -640,12 +641,31 @@ export function probeNpmLatestCC(): string | null {
  * per-family — the 2026-06-12 regression hit sonnet while haiku obeyed
  * the identical merged body).
  */
-const PROBE_FAMILIES: Array<{ family: string; model: string }> = [
-  { family: 'haiku',  model: 'claude-haiku-4-5' },
-  { family: 'sonnet', model: 'claude-sonnet-5' },
-  { family: 'opus',   model: 'claude-opus-5-5' },
-  { family: 'fable',  model: 'claude-fable-5' },
-];
+const PROBE_FAMILY_ORDER = ['haiku', 'sonnet', 'opus', 'fable'] as const;
+
+/**
+ * The model each family's probe sends to: the newest one of that family in
+ * the bundled model list. That is the model the family shorthand (`haiku`,
+ * `sonnet`, ...) routes to before the live catalog answers, so the probes
+ * exercise what people are sent to by default.
+ *
+ * Derived, not written out. A hand-kept list here went three model
+ * generations stale without a failing test: it still probed Haiku 4.5,
+ * Sonnet 5 and Fable 5 when the shorthands routed to Haiku 5.5, Sonnet 5.5
+ * and Fable 5.2. A family the list holds no model for, or that is suspended
+ * (DARIO_SUSPENDED_MODELS), is left out: every request to it would fail, and
+ * the probe would read that as a fault of its own.
+ */
+export function probeFamilies(
+  bases: readonly string[] = dropSuspendedModels(BAKED_BASE_MODELS),
+): Array<{ family: string; model: string }> {
+  const out: Array<{ family: string; model: string }> = [];
+  for (const family of PROBE_FAMILY_ORDER) {
+    const model = resolveFamilyBase(family, bases);
+    if (model !== null) out.push({ family, model });
+  }
+  return out;
+}
 
 /**
  * The client system prompt the `--obedience` probe sends. Deliberately
@@ -1101,7 +1121,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
         if (!res.headers.get('anthropic-ratelimit-unified-status')) return null;
         return parseRateLimits(res.headers);
       };
-      const results = await Promise.all(PROBE_FAMILIES.map(f => probe(f.model).catch(() => null)));
+      const results = await Promise.all(probeFamilies().map(f => probe(f.model).catch(() => null)));
 
       // Use the first non-null snapshot for the unified view — they
       // should all agree on the unified buckets (same account, same moment).
@@ -1270,7 +1290,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           detail: `model answered but ignored the client system prompt (last reply: "${lastReply.slice(0, 80)}") — behavioral, upstream-influenced; investigate presentation/merge (CLIENT_SYSTEM_PREFACE seam), not necessarily a dario bug`,
         };
       };
-      const rows = await Promise.all(PROBE_FAMILIES.map((f) => probeFamily(f)));
+      const rows = await Promise.all(probeFamilies().map((f) => probeFamily(f)));
       checks.push(...rows);
     }
   }
