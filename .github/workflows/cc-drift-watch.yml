@@ -11,7 +11,9 @@ name: CC drift watch
 # exits if we've already run a full check against that version. The
 # heavyweight `check` job only fires when the npm version has changed,
 # so the cost is roughly 24 fast-gate runs per day + 1 full run per
-# CC release (historically ~1/week).
+# CC release (historically ~1/week). A release whose maxTested bump rides
+# a template rebake PR ("Ask the template watcher first") is checked again
+# each hour until that PR has merged, usually once more.
 
 on:
   schedule:
@@ -110,6 +112,10 @@ jobs:
       # maintainer merges through the PR UI.
       contents: read
       issues: write
+      # Dispatch cc-drift-template-watch.yml for the new version and read that run's state.
+      actions: write
+      # List the open rebake PRs to see whether one carries the maxTested bump.
+      pull-requests: read
     needs: version_check
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
@@ -117,7 +123,9 @@ jobs:
       github.repository == 'askalf/dario'
       && (needs.version_check.outputs.should_run == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 until the job began waiting, for up to ten minutes, on the template
+    # watcher run it dispatches.
+    timeout-minutes: 35
     steps:
       - uses: askalf/ci/actions/checkout-with-retry@50ee9df5838810bc23cd202c7da9da64a39e69f2 # main 2026-11-10, askalf/ci#199
         with:
@@ -216,6 +224,87 @@ jobs:
           close-match: title
           close-comment: "Resolved: cc-drift-watch ran clean against CC v${{ steps.ver.outputs.cc_version }} on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). Pinned constants now match."
 
+      - name: Ask the template watcher first
+        # A Claude Code version that changes the prompt or the tools used to
+        # ship as two releases half an hour apart: the maxTested bump drafted
+        # below, then a template rebake once that merge had brought the
+        # self-hosted runner up to the new version. So before drafting, this
+        # dispatches the template watcher for the version and waits for that
+        # run. When a rebake PR comes out of it carrying the bump, the draft
+        # below is skipped and the one PR is the one release.
+        #
+        # Every other outcome leaves `carried` false and the draft below runs
+        # as it always did: no rebake needed, a dispatch that fails, a run that
+        # does not finish in ten minutes, an upstream check without a verdict.
+        #
+        # While a rebake PR carries the bump, the version is not marked as
+        # checked (see the sentinel steps), so the next hourly run looks
+        # again: clean once the PR has merged, which closes the drift issue,
+        # and back here if the PR was closed without merging.
+        if: steps.drift.outputs.exit_code != '0'
+        id: carrier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # From the drift report, 'unknown' when that could not be read.
+          CC_VERSION: ${{ steps.ver.outputs.cc_version }}
+        run: |
+          set -uo pipefail
+          carried=false
+          pr=""
+          finish() {
+            echo "carried=$carried" >> "$GITHUB_OUTPUT"
+            echo "pr=$pr" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          read_carrier() {
+            # Prints "<carried> <pr>"; "false" alone when the lookup fails.
+            node scripts/range-bump-carrier.mjs find "$CC_VERSION" 2>/dev/null \
+              | node -e 'let t="";process.stdin.on("data",(d)=>t+=d).on("end",()=>{try{const r=JSON.parse(t);console.log(String(r.carried===true)+" "+(r.pr??""))}catch{console.log("false")}})'
+          }
+
+          # Only a maxTested bump can ride a rebake.
+          if ! node -e 'const r=JSON.parse(require("fs").readFileSync("drift-report.json","utf8"));process.exit((r.items||[]).some((i)=>i&&i.category==="compat.range")?0:1)' 2>/dev/null; then
+            echo "no maxTested bump in the report; nothing to ask"
+            finish
+          fi
+          if [[ ! "$CC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "no plain Claude Code version in the report; nothing to ask"
+            finish
+          fi
+
+          read -r carried pr <<< "$(read_carrier)"
+          if [ "$carried" = "true" ]; then
+            echo "rebake PR #$pr already carries the maxTested bump to $CC_VERSION"
+            finish
+          fi
+          carried=false
+
+          # Our own PR for this version is open: it is the carrier, and the
+          # draft step below finds it and stops.
+          own=$(gh pr list --head "bot/cc-drift-v$CC_VERSION" --state open --json number --jq '.[0].number // ""' 2>/dev/null || echo "")
+          if [ -n "$own" ]; then
+            echo "PR #$own is already open for $CC_VERSION; nothing to ask"
+            finish
+          fi
+
+          # A minute back, so a clock a little ahead of GitHub's does not hide the run.
+          since=$(date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ)
+          if ! gh workflow run cc-drift-template-watch.yml --ref master -f "cc_version=$CC_VERSION"; then
+            echo "::warning::could not dispatch the template watcher; drafting the maxTested bump as before"
+            finish
+          fi
+          verdict=$(node scripts/range-bump-carrier.mjs await "$CC_VERSION" "$since" 600 2>/dev/null || echo '{}')
+          echo "template watcher run: $verdict"
+
+          read -r carried pr <<< "$(read_carrier)"
+          if [ "$carried" = "true" ]; then
+            echo "rebake PR #$pr carries the maxTested bump to $CC_VERSION; no separate PR is drafted"
+          else
+            carried=false
+            echo "no rebake PR carries the bump; drafting it as before"
+          fi
+          finish
+
       - name: Auto-draft drift-fix PR
         # Only when the binary-scan drift check flagged an item. The
         # auto-drafter reads drift-report.json and, for known one-line
@@ -232,7 +321,10 @@ jobs:
         # GITHUB_TOKEN, so a PR opened with GITHUB_TOKEN never gets CI
         # checks and nothing can ever merge it (this stranded #352, #356,
         # #359 — each one required a manual chore/release-* rollup PR to ship).
-        if: steps.drift.outputs.exit_code != '0'
+        #
+        # Skipped when a template rebake PR carries the maxTested bump (the
+        # step above).
+        if: steps.drift.outputs.exit_code != '0' && steps.carrier.outputs.carried != 'true'
         id: auto_draft
         env:
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
@@ -428,11 +520,15 @@ jobs:
         # Only on success: a failed full check leaves the version
         # unmarked, so the hourly gate re-runs it instead of the version
         # being cached as "seen" by a run that never actually checked it.
-        if: success()
+        #
+        # Not while a rebake PR carries the maxTested bump either: nothing of
+        # this job's is open for the version, so the hourly run has to look
+        # again until that PR has merged.
+        if: success() && steps.carrier.outputs.carried != 'true'
         run: touch .cc-version-sentinel
 
       - name: Save cache sentinel (keyed on CC version)
-        if: success()
+        if: success() && steps.carrier.outputs.carried != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cc-version-sentinel

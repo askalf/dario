@@ -47,6 +47,16 @@ export function patchMaxTested(source, _oldVersionFromReport, newVersion) {
 }
 
 /**
+ * The release note for a maxTested bump. One wording, whichever PR carries
+ * the bump: the one cc-drift-watch drafts, or a template rebake captured from
+ * the new version.
+ */
+export function rangeBullet(ccVersion, before) {
+  return `- **Claude Code ${ccVersion} is in the supported range.** ` +
+    `\`dario doctor\` and proxy startup no longer warn that it is untested, as they did for anything newer than ${before}.`;
+}
+
+/**
  * Insert a bullet line immediately after a CHANGELOG heading. Line-
  * anchored regex avoids matching string occurrences inside HTML
  * comments. Default: matches `## [Unreleased]`. Can target a specific

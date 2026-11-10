@@ -47,7 +47,7 @@ function runBot(script, args, stage) {
   const end = at === -1 ? -1 : lines.findIndex((l, i) => i > at && l.startsWith('## ['));
   const bullets = at === -1 ? [] : lines.slice(at + 1, end === -1 ? undefined : end).filter((l) => l.startsWith('- '));
   const summary = existsSync(join(root, 'rebake-summary.md')) ? readFileSync(join(root, 'rebake-summary.md'), 'utf8') : '';
-  return { status: r.status, stderr: r.stderr, stdout: r.stdout, bullet, bullets, summary };
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout, bullet, bullets, summary, root };
 }
 
 for (const [script, args, expectVersions] of [
@@ -139,6 +139,64 @@ header('rebake-release-prep.mjs on a label and user-agent bake');
   check('it names the label the bundle now carries and the one it held', (bullets[0] ?? '').includes('labelled Claude Code 2.1.281') && (bullets[0] ?? '').includes('It was labelled 2.1.280.'), bullets[0]);
   check('it names the user-agent value the bundle now holds', (bullets[0] ?? '').endsWith('Its `user-agent` value is `claude-cli/2.1.281 (external, sdk-cli)`.'), bullets[0]);
   check('it does not vouch for the other headers', !/headers are|unchanged|already held/i.test(bullets[0] ?? ''), bullets[0]);
+}
+
+// A bake captured from a Claude Code version past maxTested. With --carry-range the
+// rebake PR is the one release for that version: it moves maxTested, lists the version
+// and files the note cc-drift-watch.yml's own PR would have filed.
+header('rebake-release-prep.mjs --carry-range');
+{
+  const git = (root, ...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: root, encoding: 'utf8' });
+  const PINNED = JSON.stringify(['2.1.279', '2.1.280'], null, 2) + '\n';
+  // A bake that moves the label and one tool, from a bundle labelled `from` to one labelled `to`.
+  const stage = (to, { pinned = PINNED, source } = {}) => (root) => {
+    const path = join(root, 'src', 'cc-template-data.json');
+    const tool = (description) => [{ name: 'Bash', description, input_schema: { type: 'object', properties: {} } }];
+    const committed = { ...JSON.parse(readFileSync(path, 'utf8')), system_prompt: 'base', tools: tool('old text') };
+    writeFileSync(path, JSON.stringify(committed, null, 2) + '\n');
+    mkdirSync(join(root, 'test'));
+    if (pinned !== null) writeFileSync(join(root, 'test', 'compat-pinned.json'), pinned);
+    if (source !== undefined) writeFileSync(join(root, 'src', 'live-fingerprint.ts'), source);
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'base');
+    writeFileSync(path, JSON.stringify({ ...committed, _version: to, tools: tool('new text') }, null, 2) + '\n');
+  };
+  const sourceOf = (root) => readFileSync(join(root, 'src', 'live-fingerprint.ts'), 'utf8');
+  const pinnedOf = (root) => readFileSync(join(root, 'test', 'compat-pinned.json'), 'utf8');
+  const RANGE_NOTE = '- **Claude Code 2.1.281 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.280.';
+
+  const carried = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.281'));
+  check('exits 0', carried.status === 0, carried.stderr);
+  check('maxTested moves to the version the bundle was captured from', sourceOf(carried.root).includes("maxTested: '2.1.281'"), sourceOf(carried.root));
+  check('the version is listed in test/compat-pinned.json', JSON.stringify(JSON.parse(pinnedOf(carried.root))) === JSON.stringify(['2.1.279', '2.1.280', '2.1.281']), pinnedOf(carried.root));
+  check('the range note leads, in the words of cc-drift-watch.yml\'s own PR', carried.bullets[0] === RANGE_NOTE, carried.bullets[0]);
+  check('the notes for the bake follow it', carried.bullets.length === 3 && carried.bullets[1].includes('`Bash`') && carried.bullets[2].includes('labelled Claude Code 2.1.281'), carried.bullets.join(' | '));
+  check('the PR summary says the range moved and that no other PR moves it', carried.summary.startsWith('- **Supported range:** `SUPPORTED_CC_RANGE.maxTested` goes from 2.1.280 to 2.1.281, and `test/compat-pinned.json` lists 2.1.281. No separate PR moves it.\n'), carried.summary);
+  check('the log line names the bump', carried.stderr.includes('maxTested 2.1.280'), carried.stderr);
+  check('the new package version is still the only thing on stdout', carried.stdout === '6.11.4\n', carried.stdout);
+
+  const plain = runBot('rebake-release-prep.mjs', [], stage('2.1.281'));
+  check('without the flag: maxTested stays', plain.status === 0 && sourceOf(plain.root).includes("maxTested: '2.1.280'"), sourceOf(plain.root));
+  check('without the flag: the list stays and no range note is filed', pinnedOf(plain.root) === PINNED && !plain.bullets.join(' ').includes('supported range') && !plain.summary.includes('Supported range'), plain.bullets.join(' | '));
+
+  const same = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.280'));
+  check('a bake from the version maxTested already names: nothing about the range', same.status === 0 && sourceOf(same.root).includes("maxTested: '2.1.280'") && pinnedOf(same.root) === PINNED && !same.bullets.join(' ').includes('supported range') && !same.summary.includes('Supported range'), same.bullets.join(' | '));
+
+  const older = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.279'));
+  check('a bake from an older version never moves maxTested back', older.status === 0 && sourceOf(older.root).includes("maxTested: '2.1.280'") && !older.bullets.join(' ').includes('supported range'), sourceOf(older.root));
+
+  const odd = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.281-beta.1'));
+  check('a bundle version that is not x.y.z leaves the range alone', odd.status === 0 && sourceOf(odd.root).includes("maxTested: '2.1.280'") && !odd.bullets.join(' ').includes('supported range'), sourceOf(odd.root));
+
+  const noLine = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.281', { source: 'export const SUPPORTED_CC_RANGE = {};\n' }));
+  check('a source file with no maxTested line: the rebake ships without the bump', noLine.status === 0 && noLine.stdout === '6.11.4\n' && pinnedOf(noLine.root) === PINNED && !noLine.bullets.join(' ').includes('supported range'), noLine.stderr);
+
+  const noList = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.281', { pinned: null }));
+  check('no pinned list: the bump ships and the summary does not claim the list', noList.status === 0 && sourceOf(noList.root).includes("maxTested: '2.1.281'") && noList.summary.startsWith('- **Supported range:** `SUPPORTED_CC_RANGE.maxTested` goes from 2.1.280 to 2.1.281. No separate PR moves it.\n'), noList.summary);
+
+  const badList = runBot('rebake-release-prep.mjs', ['--carry-range'], stage('2.1.281', { pinned: '{"not":"a list"}\n' }));
+  check('a pinned file that is not a list of versions is left byte for byte', badList.status === 0 && pinnedOf(badList.root) === '{"not":"a list"}\n' && !badList.summary.includes('compat-pinned.json'), badList.summary);
 }
 
 // cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,
