@@ -43,6 +43,13 @@ cloudflared tunnel --url http://localhost:3456   # terminal 2 → https://<rando
 ```
 
 In Cursor → Settings → Models: enable **Override OpenAI Base URL** with `https://<random>.trycloudflare.com/v1`, key `dario`, and add models as `anthropic:opus` / `anthropic:sonnet` / `anthropic:haiku`. The `anthropic:` prefix routes to the Claude backend without the `claude-` substring that makes Cursor switch to a tool format the OpenAI path can't parse, and it dodges Cursor's built-in-name collision. Use **Agent** mode (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>I</kbd>); Chat sends no tools. Treat the tunnel URL as a credential. Full walkthrough with every gotcha: [agent-compat.md#cursor](integrations/agent-compat.md#cursor).
+
+When it does not work, the message tells you which step:
+
+- `Access to private networks is forbidden`, or `ssrf_blocked` with `connection to private IP is blocked`: Cursor was given `http://localhost:3456`. Its servers make the call, so the base URL has to be the tunnel's.
+- A toast reading `this model is already available as` and a model name: the name you added matches one Cursor ships (`claude-opus-4-7`, `gpt-5`), so Cursor sent it to its own gateway and never used the override. Add the `anthropic:` names.
+- Tool calls come back as text (`Tool: Read` and a block of JSON) and nothing is edited: the model name contains `claude-`. Use `anthropic:opus`, not a `claude:` name.
+- Nothing shows in `dario proxy --verbose`: the request never reached the tunnel. Check that the base URL ends in `/v1`, that the **Override OpenAI Base URL** switch is on and not only filled in, and that you are in Agent and not Chat.
 </details>
 
 <details>

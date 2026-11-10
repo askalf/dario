@@ -107,6 +107,34 @@ const firstSentence = (text) => { const m = /^(.*?[.!?])(?:\s|$)/.exec(text); re
 // A tagline follows the name in the doc, so it starts lowercase; on its own it opens a sentence.
 const cap = (s) => s.replace(/^[a-z]/, (c) => c.toUpperCase());
 const clip = (s, n) => (s.length <= n ? s : s.slice(0, n).replace(/\s+\S*$/, '') + '.');
+const endSentence = (s) => (/[.!?]$/.test(s) ? s : s + '.');
+
+/**
+ * The description a search result or a share shows under the title: whole
+ * sentences, at most `max` characters. It opens with the headline, because a
+ * result is read without the page around it and has to name the tool. The
+ * tagline follows unless the headline already says it, then the block's first
+ * sentence, or the shorter `fallback` when that one is missing or too long,
+ * each only while it fits.
+ *
+ * The earlier form was the bare tagline and the first sentence, cut at 160
+ * characters with a full stop put on the end. Cursor's read "needs a public
+ * HTTPS tunnel, and the anthropic: prefix. ... and they make the.": no tool
+ * named, a lowercase opening, and a sentence that stops in the middle.
+ */
+export function describeTool({ headline, taglineText, sentence, fallback }, max = 160) {
+  const parts = [endSentence(headline)];
+  const fits = (s) => parts.join(' ').length + 1 + s.length <= max;
+  const words = (s) => s.toLowerCase().match(/[a-z0-9]{4,}/g) || [];
+  const said = new Set(words(headline));
+  if (taglineText && !words(taglineText).every((w) => said.has(w))) {
+    const tagline = endSentence(cap(taglineText));
+    if (fits(tagline)) parts.push(tagline);
+  }
+  if (sentence && fits(sentence)) parts.push(sentence);
+  else if (fallback && fits(fallback)) parts.push(fallback);
+  return parts.join(' ');
+}
 
 export function parseToolsDoc(md) {
   const src = md.replace(/\r\n/g, '\n');
@@ -130,8 +158,13 @@ export function parseToolsDoc(md) {
     const body = m[2].trim();
     const taglineText = plain(tagline);
     // A block that is only a config fence has no sentence of its own; the card and the description then say what every page says.
-    const sentence = firstSentence(plain(body)) || `Point ${name} at dario, the local endpoint that serves every tool from the Claude and ChatGPT plans you already pay for.`;
-    tools.push({ name, slug, tagline, taglineText, body, blurb: tagline || sentence, headline: HEADLINES[slug] || `${name} on the Claude plan you already pay for`, description: clip((taglineText ? taglineText.replace(/[.!?]$/, '') + '. ' : '') + sentence, 160) });
+    const own = firstSentence(plain(body));
+    const sentence = own || `Point ${name} at dario, the local endpoint that serves every tool from the Claude and ChatGPT plans you already pay for.`;
+    // True of a block that configures a client, which is every block that names dario's address. Not of Docker's, which runs dario itself.
+    const pointsAtDario = /(?:localhost|127.0.0.1):3456/.test(body);
+    tools.push({ name, slug, tagline, taglineText, body, blurb: tagline || sentence, headline: HEADLINES[slug] || `${name} on the Claude plan you already pay for`, description: '' });
+    const tool = tools[tools.length - 1];
+    tool.description = describeTool({ headline: tool.headline, taglineText, sentence: own, fallback: pointsAtDario ? "Setup is a few lines that point it at dario's local endpoint." : '' });
   }
   return { intro, outro, tools };
 }

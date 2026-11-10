@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSite, parseToolsDoc, renderBlocks, renderInline, resolveDocLink } from '../scripts/site-tools.mjs';
+import { buildSite, describeTool, parseToolsDoc, renderBlocks, renderInline, resolveDocLink } from '../scripts/site-tools.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = 'https://askalf.github.io/dario';
@@ -50,6 +50,54 @@ header('the doc parses into one page per tool');
   const cursor = doc.tools.find((t) => t.slug === 'cursor');
   check('the tagline after the name is kept, the dash before it is not', !!cursor && /^needs a public HTTPS tunnel/.test(cursor.tagline) && !DASH.test(cursor.tagline[0]), cursor && cursor.tagline);
   check('every tool has a headline and a description between 40 and 160 characters', doc.tools.every((t) => t.headline.length > 10 && t.description.length >= 40 && t.description.length <= 160), doc.tools.map((t) => `${t.slug}:${t.description.length}`).join(' '));
+}
+
+// The description is what a search result shows under the title, read with no page around it.
+// It used to be the bare tagline and the block's first sentence cut at 160 characters with a
+// full stop put on the end: Cursor's read "needs a public HTTPS tunnel, and the anthropic:
+// prefix. ... and they make the."
+header('descriptions are whole sentences that name the tool');
+{
+  for (const t of doc.tools) {
+    const d = t.description;
+    check(`${t.slug}: opens with the headline, which names the tool`, d.startsWith(t.headline) && /^[A-Za-z]/.test(d), d);
+    check(`${t.slug}: ends where a sentence ends`, /[.!?]$/.test(d), d);
+  }
+  // A sentence may end in a preposition ("the plan you already pay for."); it does not end in an article, a conjunction or a subject.
+  const whole = (d) => d.split(/(?<=[.!?])\s+/).every((s) => !/\b(?:the|a|an|and|or|of|they|that|which)[.!?]$/i.test(s));
+  check('no description stops in the middle of a sentence', doc.tools.every((t) => whole(t.description)), doc.tools.filter((t) => !whole(t.description)).map((t) => t.description).join(' | '));
+  check('the check above would have caught the old Cursor description', !whole("needs a public HTTPS tunnel, and the anthropic: prefix. Cursor's BYOK is backend-mediated: the app sends your base URL up to Cursor's servers and they make the."));
+  const cursor = doc.tools.find((t) => t.slug === 'cursor');
+  check('Cursor: the headline, then its tagline as a sentence of its own', cursor.description === 'Cursor on the Claude plan you already pay for. Needs a public HTTPS tunnel, and the anthropic: prefix.', cursor.description);
+  check('the same text is what the page and the share card carry', pages.get('tools/cursor/index.html').includes(`name="description" content="${cursor.description}"`) && pages.get('tools/cursor/index.html').includes(`property="og:description" content="${cursor.description}"`));
+
+  const H = 'Tool on the Claude plan you already pay for';
+  check('headline alone when there is nothing else', describeTool({ headline: H, taglineText: '', sentence: '' }) === `${H}.`);
+  check('a tagline becomes a capitalised sentence', describeTool({ headline: H, taglineText: 'needs a tunnel', sentence: '' }) === `${H}. Needs a tunnel.`);
+  check('a tagline that already ends a sentence gets no second stop', describeTool({ headline: H, taglineText: 'needs a tunnel.', sentence: '' }) === `${H}. Needs a tunnel.`);
+  check('a tagline the headline already says is left out', describeTool({ headline: 'dario in Docker, on Kubernetes, on a Pi in a closet', taglineText: 'Kubernetes, a Pi in a closet', sentence: '' }) === 'dario in Docker, on Kubernetes, on a Pi in a closet.');
+  check('the first sentence follows while it fits', describeTool({ headline: H, taglineText: '', sentence: 'It reads the base URL from the environment.' }) === `${H}. It reads the base URL from the environment.`);
+  const long = 'This sentence is far too long to fit beside the headline in the space a search result gives a description, so it has to be left out whole.';
+  check('a sentence that does not fit is left out whole, never cut', describeTool({ headline: H, taglineText: '', sentence: long }) === `${H}.`);
+  check('the fallback stands in for a missing sentence', describeTool({ headline: H, taglineText: '', sentence: '', fallback: 'Setup is short.' }) === `${H}. Setup is short.`);
+  check('and for one that does not fit', describeTool({ headline: H, taglineText: '', sentence: long, fallback: 'Setup is short.' }) === `${H}. Setup is short.`);
+  check('but not beside a sentence that does', describeTool({ headline: H, taglineText: '', sentence: 'It fits.', fallback: 'Setup is short.' }) === `${H}. It fits.`);
+  check('never past the limit', describeTool({ headline: H, taglineText: 'x'.repeat(200), sentence: long, fallback: 'y'.repeat(200) }).length <= 160);
+  const docker = doc.tools.find((t) => t.slug === 'docker');
+  check('Docker runs dario and is not told to point at it', !!docker && !/points? it at dario/.test(docker.description), docker && docker.description);
+}
+
+// A page should answer the search that lands on it. The messages below are what Cursor shows
+// when one of the setup steps is wrong (docs/integrations/agent-compat.md has the long form).
+header('the Cursor page names the errors people search for');
+{
+  const cursor = pages.get('tools/cursor/index.html');
+  for (const needle of ['Access to private networks is forbidden', 'ssrf_blocked', 'connection to private IP is blocked', 'this model is already available as', 'Tool: Read']) {
+    check(`"${needle}"`, cursor.includes(`<code>${needle}</code>`));
+  }
+  check('as a list, one cause and one fix to an item', (cursor.match(/<ul>/g) || []).length >= 1 && /<li><code>Access to private networks is forbidden<\/code>/.test(cursor));
+  const compat = readFileSync(join(ROOT, 'docs', 'integrations', 'agent-compat.md'), 'utf8');
+  check('each message is one the long-form guide documents', ['Access to private networks is forbidden', 'ssrf_blocked', 'connection to private IP is blocked', 'this model is already available as', 'Tool: Read'].every((n) => compat.includes(n)));
 }
 
 header('the markdown subset renders with nothing left over');

@@ -4,7 +4,8 @@ name: GitHub Pages (the site and the wire-drift feed)
 # art and the brand font next to it), the per-tool pages under /tools/
 # (generated from docs/tools.md by scripts/site-tools.mjs) and, under
 # /drift-feed/, every change to
-# what Claude Code sends on the wire as the template watcher observed it. The
+# what Claude Code sends on the wire as the template watcher observed it, and
+# a sitemap.xml listing all of them (scripts/site-sitemap.mjs). The
 # feed is built from git history alone (scripts/drift-feed.mjs walks the
 # commits that touched src/cc-template-data.json), so there is nothing to
 # commit: a template rebake lands on master, this rebuilds and redeploys.
@@ -23,6 +24,7 @@ on:
       - site/**
       - docs/tools.md
       - scripts/site-tools.mjs
+      - scripts/site-sitemap.mjs
       - .github/readme/**
       - scripts/readme/fonts/**
       - src/cc-template-data.json
@@ -66,6 +68,8 @@ jobs:
           cp .github/readme/*.jpg .github/readme/*.png dist-feed/art/
           cp scripts/readme/fonts/*.woff2 dist-feed/fonts/
           touch dist-feed/.nojekyll
+          # Last, so it lists every page the artifact holds.
+          node scripts/site-sitemap.mjs --dir dist-feed --site "https://askalf.github.io/dario"
           ls -la dist-feed dist-feed/art dist-feed/fonts
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
