@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`dario doctor` warns when the template holds no Haiku 5.5 system prompt.** Haiku 5.5 was added to the "Prompt variants" row as a model that might share the base prompt, so a template without one read as fine. Its first capture showed a prompt of its own, which 6.23.8 bundles. A template that lacks it now warns, as it does for Fable, Opus 5 and Sonnet 5, and a template rebake whose Haiku 5.5 capture fails with nothing to keep stops instead of shipping the base prompt for that model. Requests are built the same as before.
+
 ## [6.23.8] - 2026-11-10
 
 - **The bundled template holds a system prompt for Haiku 5.5.** It is 8633 characters, and requests for Haiku 5.5 models built from the bundled template carry it in place of the base prompt.
