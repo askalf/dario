@@ -29,6 +29,14 @@
       "visibility": "list"
     },
     {
+      "slug": "gpt-6.1-sol",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-6.1-terra",
+      "visibility": "list"
+    },
+    {
       "slug": "gpt-reserve",
       "visibility": "hide"
     }
