@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.7] - 2026-11-10
+
+- **Claude Code 2.1.322 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.321.
+- **The bundled template is labelled Claude Code 2.1.322.** It was labelled 2.1.321. Its `user-agent` value is `claude-cli/2.1.322 (external, sdk-cli)`.
+
 ## [6.23.6] - 2026-11-10
 
 - **The bundled template holds a system prompt for Fable 5.1.** It is 11880 characters, and requests for Fable 5.1 models built from the bundled template carry it in place of the Fable prompt.
