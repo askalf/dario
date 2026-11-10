@@ -13,6 +13,14 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.6] - 2026-11-10
+
+- **The bundled template holds a system prompt for Fable 5.1.** It is 11880 characters, and requests for Fable 5.1 models built from the bundled template carry it in place of the Fable prompt.
+- **The bundled template holds a system prompt for Fable 5.2.** It is 10632 characters, and requests for Fable 5.2 models built from the bundled template carry it in place of the Fable prompt.
+- **The bundled template holds a system prompt for Opus 5.5.** It is 6108 characters, and requests for Opus 5.5 models built from the bundled template carry it in place of the Opus 5 prompt.
+- **The bundled template holds a system prompt for Sonnet 5.5.** It is 5841 characters, and requests for Sonnet 5.5 models built from the bundled template carry it in place of the Sonnet 5 prompt.
+- **The bundle's `_variantShapeHashes` field differs** in a way these notes do not break down.
+
 - **Fable 5.2, Fable 5.1, Opus 5.5 and Sonnet 5.5 are each captured for their own system prompt.** Claude Code's Fable prompt names the model version, and the bundled one is captured on Fable 5, so a Fable 5.2 request built from the bundled template introduced the model as Claude Fable 5. The template watcher now captures each of the four models. A capture that differs from the prompt of its family (Fable, Opus 5 or Sonnet 5) is stored by the next template rebake, and requests for that model then carry it. Until that rebake, and for a model whose capture does not differ, requests carry the family's prompt as before. `dario doctor` lists the four in its "Prompt variants" row.
 - **A cache write into the one-hour cache is priced at the one-hour rate.** Anthropic charges 2x input for it and 1.25x input for a five-minute write, and dario priced every cache write at 1.25x. dario asks for the one-hour cache on subscription traffic, as Claude Code does, so `dario usage`, `/analytics`, the ledger and key budgets read low on most cache writes: $5 per million tokens on Opus 5.5, where the write costs $8. A response says how many of its cache-write tokens went to the one-hour cache; that count is now recorded and priced. Ledger rows written before this hold no such count and stay priced at the five-minute rate. The by-key lines of `dario usage` name the one-hour share, the ledger's cells and summaries carry it as `cacheCreate1hTokens`, and the request log as `cache_create_1h`.
 - **A key's dollar budget holds a request's prompt at the one-hour cache-write rate before it is sent.** The amount held for a request in flight is meant as the most it can cost. It priced the whole prompt as a five-minute cache write, which a one-hour write exceeds, so a key could pass its daily dollar budget by the difference.
