@@ -844,7 +844,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       checks.push({
         status: 'ok',
         label: 'Prompt variants',
-        detail: `all ${VARIANT_FAMILIES.length} model families carried (${VARIANT_FAMILIES.map((f) => f.key).join(', ')})`,
+        detail: `all ${VARIANT_FAMILIES.length} model families covered (${VARIANT_FAMILIES.map((f) => f.key).join(', ')})`,
       });
     } else {
       checks.push({

@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Fable 5.2, Fable 5.1, Opus 5.5 and Sonnet 5.5 are each captured for their own system prompt.** Claude Code's Fable prompt names the model version, and the bundled one is captured on Fable 5, so a Fable 5.2 request built from the bundled template introduced the model as Claude Fable 5. The template watcher now captures each of the four models. A capture that differs from the prompt of its family (Fable, Opus 5 or Sonnet 5) is stored by the next template rebake, and requests for that model then carry it. Until that rebake, and for a model whose capture does not differ, requests carry the family's prompt as before. `dario doctor` lists the four in its "Prompt variants" row.
+
 ## [6.23.5] - 2026-11-09
 
 - **Fable 5.2, Fable 5.1, Sonnet 5.5 and Haiku 5.5 are priced at their published rates.** None of them had a row in the price table, so `dario usage`, `/analytics`, the ledger and key budgets costed every request for them at the Sonnet 4.6 rate of $3/$15 per million tokens. Fable 5.2 is $8/$40 and Fable 5.1 is $10/$50, so both read at under half their cost; Sonnet 5.5 is $2/$10 and read 50% high; Haiku 5.5 is $0.10/$0.50 and read thirty times high. A key with a dollar budget was held to the same wrong figure. The ledger stores tokens and prices them when read, so the days already recorded for Fable 5.2, Fable 5.1 and Sonnet 5.5 come out at the right rate. Recorded Haiku 5.5 days come out at its short-prompt rate, which is low for any request in them that was over 100,000 prompt tokens (next entry). Opus 4.5, Sonnet 4.5 and the three Mythos models have rows of their own too.

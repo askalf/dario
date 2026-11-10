@@ -3,8 +3,8 @@
 // model-specific system prompt than the shared base. dario must inject Fable's
 // prompt for Fable requests and the base for everything else.
 
-import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5, CC_TEMPLATE } from '../dist/cc-template.js';
-import { VARIANT_FAMILIES, missingVariantFamilies } from '../dist/live-fingerprint.js';
+import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5, CC_TEMPLATE, withoutPasteOnlyExemption } from '../dist/cc-template.js';
+import { VARIANT_FAMILIES, missingVariantFamilies, promptVariantsOf, variantFor } from '../dist/live-fingerprint.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -150,11 +150,54 @@ header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
     check(`${f.key}: capture model routes to a non-base variant`,
       systemPromptForModel(f.captureModel) !== CC_SYSTEM_PROMPT);
   }
-  check('matcher precedence: fable is first (never falls into the -5 arms)',
-    VARIANT_FAMILIES[0]?.key === 'fable');
+  const at = (key) => VARIANT_FAMILIES.findIndex((f) => f.key === key);
+  check('matcher precedence: fable is ahead of the -5 arms (never falls into them)',
+    at('fable') >= 0 && at('fable') < at('opus-5') && at('fable') < at('sonnet-5'));
+  for (const f of VARIANT_FAMILIES.filter((x) => x.within !== undefined)) {
+    check(`${f.key}: sits within a family of the table that has none above it`,
+      at(f.within) >= 0 && VARIANT_FAMILIES[at(f.within)].within === undefined);
+    check(`${f.key}: is matched ahead of ${f.within}, whose matcher accepts its models too`,
+      at(f.key) < at(f.within) && VARIANT_FAMILIES[at(f.within)].matches(f.captureModel));
+    check(`${f.key}: its matcher leaves ${f.within}'s own capture model alone`,
+      !f.matches(VARIANT_FAMILIES[at(f.within)].captureModel));
+  }
   const missing = missingVariantFamilies(CC_TEMPLATE);
   check('loaded template misses no family', missing.length === 0,
     missing.length > 0 ? `missing: ${missing.join(', ')}` : undefined);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('a model version within a family: its own prompt, else the family\'s');
+{
+  const fam = (key) => VARIANT_FAMILIES.find((f) => f.key === key);
+  const held = { fable: 'FABLE', 'opus-5': 'OPUS5' };
+  check('own variant wins', variantFor({ ...held, 'fable-5-2': 'FABLE52' }, fam('fable-5-2')) === 'FABLE52');
+  check('none of its own: the wider family\'s', variantFor(held, fam('fable-5-2')) === 'FABLE' && variantFor(held, fam('opus-5-5')) === 'OPUS5');
+  check('neither held: undefined, which leaves the base', variantFor({}, fam('fable-5-2')) === undefined && variantFor(held, fam('sonnet-5-5')) === undefined);
+  check('an empty string is not a variant', variantFor({ ...held, 'fable-5-2': '' }, fam('fable-5-2')) === 'FABLE');
+  check('a family with none above it reads only its own', variantFor({ 'fable-5-2': 'FABLE52' }, fam('fable')) === undefined);
+
+  // Which family a model id lands in, by the first matcher that accepts it.
+  const familyOf = (model) => VARIANT_FAMILIES.find((f) => f.matches(model))?.key;
+  check('claude-fable-5-2 and its [1m] form', familyOf('claude-fable-5-2') === 'fable-5-2' && familyOf('claude-fable-5-2[1m]') === 'fable-5-2');
+  check('claude-fable-5-1', familyOf('claude-fable-5-1') === 'fable-5-1');
+  check('claude-fable-5 stays Fable 5', familyOf('claude-fable-5') === 'fable' && familyOf('claude-fable-5[1m]') === 'fable');
+  check('a dated Fable 5 id is not Fable 5.2', familyOf('claude-fable-5-20260601') === 'fable');
+  check('a dated Fable 5.2 id is', familyOf('claude-fable-5-2-20261001') === 'fable-5-2');
+  check('claude-opus-5-5 and claude-opus-5', familyOf('claude-opus-5-5') === 'opus-5-5' && familyOf('claude-opus-5') === 'opus-5' && familyOf('claude-opus-5-20260715') === 'opus-5');
+  check('claude-sonnet-5-5 and claude-sonnet-5', familyOf('claude-sonnet-5-5[1m]') === 'sonnet-5-5' && familyOf('claude-sonnet-5') === 'sonnet-5');
+  check('a two-digit minor is no family\'s', familyOf('claude-opus-5-50') === 'opus-5' && familyOf('claude-fable-5-25') === 'fable');
+
+  // With the loaded template: the model version's own variant when it holds one, else the family's.
+  const loaded = promptVariantsOf(CC_TEMPLATE);
+  const plain = (key) => (typeof loaded[key] === 'string' && loaded[key].length > 0 ? withoutPasteOnlyExemption(loaded[key]) : undefined);
+  for (const f of VARIANT_FAMILIES.filter((x) => x.within !== undefined)) {
+    check(`${f.captureModel} gets ${plain(f.key) ? 'its own variant' : `the ${f.within} variant`}`,
+      systemPromptForModel(f.captureModel) === (plain(f.key) ?? plain(f.within) ?? CC_SYSTEM_PROMPT));
+  }
+  // The identity paragraph names the model version, so a Fable 5.2 variant that says another one is the wrong capture.
+  if (loaded['fable-5-2']) check('the Fable 5.2 variant names Fable 5.2', loaded['fable-5-2'].includes('Claude Fable 5.2'));
+  if (loaded['fable-5-1']) check('the Fable 5.1 variant names Fable 5.1', loaded['fable-5-1'].includes('Claude Fable 5.1'));
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

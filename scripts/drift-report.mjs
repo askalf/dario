@@ -747,10 +747,19 @@ export function meaningfulTemplateKeys(prev, now) {
  */
 const UNDESCRIBED_HEADER_VALUES = new Set(['x-api-key', 'x-stainless-os', 'x-stainless-arch']);
 
-/** A family key read as a name: `sonnet-5` gives `Sonnet 5`. */
+/** A family key read as a name: `sonnet-5` gives `Sonnet 5`, `fable-5-2` gives `Fable 5.2`. */
 export function familyLabel(key) {
-  return String(key).split('-').map((p) => (/^[a-z]/.test(p) ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
+  const parts = String(key).split('-');
+  const words = parts.filter((p) => !/^\d+$/.test(p)).map((p) => (/^[a-z]/.test(p) ? p[0].toUpperCase() + p.slice(1) : p));
+  const version = parts.filter((p) => /^\d+$/.test(p)).join('.');
+  return [...words, ...(version ? [version] : [])].join(' ');
 }
+
+/**
+ * The prompt a family's models get from a bundle that holds no variant for
+ * it, as a phrase: the wider family's for a family within one, else the base.
+ */
+const promptWithout = (v) => (v.within ? `the ${familyLabel(v.within)} prompt` : 'the base prompt');
 
 /**
  * Everything that differs between two bundles, as data. `prev` is the bundle
@@ -760,13 +769,18 @@ export function familyLabel(key) {
  * `otherKeys` names every top-level key that differs in a way not accounted
  * for field by field here (an extra field on a tool, the A/B shape memory),
  * so that a summary does not read as if that key had not moved.
+ *
+ * `within` maps a family key to the key of the wider family it sits within
+ * (VARIANT_FAMILIES in src/live-fingerprint.ts). A changed variant of such a
+ * family carries that key, because a bundle with no variant for it gives its
+ * models the wider family's prompt, not the base.
  */
-export function describeBundleChange(prev, now) {
+export function describeBundleChange(prev, now, within = {}) {
   const pv = prev.system_prompt_variants ?? {};
   const nv = now.system_prompt_variants ?? {};
   const variants = [...new Set([...Object.keys(pv), ...Object.keys(nv)])].sort()
     .filter((k) => (pv[k] ?? '') !== (nv[k] ?? ''))
-    .map((k) => ({ key: k, before: (pv[k] ?? '').length, after: (nv[k] ?? '').length }));
+    .map((k) => ({ key: k, before: (pv[k] ?? '').length, after: (nv[k] ?? '').length, ...(within[k] ? { within: within[k] } : {}) }));
 
   const prevTools = new Map((prev.tools ?? []).map((t) => [t.name, t]));
   const nowTools = new Map((now.tools ?? []).map((t) => [t.name, t]));
@@ -859,7 +873,7 @@ export function formatRebakeSummary(c) {
   const lines = [];
   for (const v of c.variants) {
     const name = `${familyLabel(v.key)} system prompt`;
-    if (v.after === 0) lines.push(`- **${name}:** removed from the bundle. Requests for ${familyLabel(v.key)} models built from it carry the base prompt.`);
+    if (v.after === 0) lines.push(`- **${name}:** removed from the bundle. Requests for ${familyLabel(v.key)} models built from it carry ${promptWithout(v)}.`);
     else if (v.before === 0) lines.push(`- **${name}:** new in the bundle, ${v.after} characters.`);
     else lines.push(`- **${name}:** \`system_prompt_variants.${v.key}\` goes from ${v.before} to ${v.after} characters.`);
   }
@@ -903,9 +917,9 @@ export function formatRebakeChangelog(c) {
   for (const v of c.variants) {
     const f = familyLabel(v.key);
     if (v.after === 0) {
-      out.push(`- **The bundled template no longer holds a system prompt for ${f}.** Requests for ${f} models built from it carry the base prompt.`);
+      out.push(`- **The bundled template no longer holds a system prompt for ${f}.** Requests for ${f} models built from it carry ${promptWithout(v)}.`);
     } else if (v.before === 0) {
-      out.push(`- **The bundled template holds a system prompt for ${f}.** It is ${v.after} characters, and requests for ${f} models built from the bundled template carry it in place of the base prompt.`);
+      out.push(`- **The bundled template holds a system prompt for ${f}.** It is ${v.after} characters, and requests for ${f} models built from the bundled template carry it in place of ${promptWithout(v)}.`);
     } else {
       out.push(`- **The bundled ${f} system prompt is the one captured from ${cc}.** It is ${v.after} characters; the bundle held a ${v.before}-character one. Requests for ${f} models built from the bundled template carry it.`);
     }

@@ -213,12 +213,22 @@ export interface VariantFamily {
   captureModel: string;
   /** True when a lowercased model id belongs to this family. */
   matches: (model: string) => boolean;
+  /**
+   * Key of the wider family this one sits within: a model version CC may
+   * send its own prompt (fable-5-2 within fable). Its models get the wider
+   * family's variant when the template holds none for it, and the bake
+   * stores its capture only when that differs from the wider family's. So
+   * the bundle may hold no variant for it, which is a measured result.
+   */
+  within?: string;
 }
 
 /**
  * The model families CC ships a DIFFERENT system prompt than the shared
  * base, in matcher-precedence order (first match wins — fable stays ahead
- * of the `-5` arms so a hypothetical fable-5 never falls into them).
+ * of the `-5` arms so a hypothetical fable-5 never falls into them, and a
+ * family that sits `within` another stays ahead of it, because the wider
+ * family's matcher accepts its models too).
  *
  * This table is the single source of truth for dario#lock-step: the
  * runtime selection (cc-template.ts:systemPromptForModel), the bake's
@@ -232,24 +242,45 @@ export interface VariantFamily {
  * prompt: the bake stores a variant only when the capture differs.
  */
 export const VARIANT_FAMILIES: readonly VariantFamily[] = [
+  // Fable's prompt names the model version ("This iteration of Claude is
+  // Claude Fable 5.2"), so each version is captured on its own. The version
+  // is bounded like `-5` below: a dated claude-fable-5-20260601 is Fable 5,
+  // not Fable 5.2.
+  { key: 'fable-5-2', captureModel: 'claude-fable-5-2', matches: (m) => /fable-5-2(?!\d)/.test(m), within: 'fable' },
+  { key: 'fable-5-1', captureModel: 'claude-fable-5-1', matches: (m) => /fable-5-1(?!\d)/.test(m), within: 'fable' },
   { key: 'fable', captureModel: 'claude-fable-5', matches: (m) => m.includes('fable') },
   // `-5` bounded so a future opus-50 doesn't match, and so the `[1m]` tag
   // (which is not a digit) still does.
+  { key: 'opus-5-5', captureModel: 'claude-opus-5-5', matches: (m) => /opus-5-5(?!\d)/.test(m), within: 'opus-5' },
   { key: 'opus-5', captureModel: 'claude-opus-5', matches: (m) => /opus-5(?!\d)/.test(m) },
+  { key: 'sonnet-5-5', captureModel: 'claude-sonnet-5-5', matches: (m) => /sonnet-5-5(?!\d)/.test(m), within: 'sonnet-5' },
   { key: 'sonnet-5', captureModel: 'claude-sonnet-5', matches: (m) => /sonnet-5(?!\d)/.test(m) },
 ];
 
 /**
+ * The prompt `variants` holds for `family`: its own, else the one of the
+ * family it sits within. Undefined when neither is held, which leaves the
+ * shared base.
+ */
+export function variantFor(variants: Record<string, string>, family: VariantFamily): string | undefined {
+  const held = (key: string | undefined): string | undefined => {
+    const v = key === undefined ? undefined : variants[key];
+    return typeof v === 'string' && v.length > 0 ? v : undefined;
+  };
+  return held(family.key) ?? held(family.within);
+}
+
+/**
  * Families from VARIANT_FAMILIES that `t` carries no variant for — i.e.
  * models that would silently get the shared BASE prompt instead of CC's
- * model-specific one. Non-empty on a healthy current bundle means the
+ * model-specific one. A family within another counts as carried while the
+ * wider family's variant is. Non-empty on a healthy current bundle means the
  * lock-step is degraded: a bad bake, an unreadable bundle behind a live
  * capture, or a pre-variants live cache shadowing the bundle.
  */
 export function missingVariantFamilies(t: TemplateData): string[] {
   const have = promptVariantsOf(t);
-  return VARIANT_FAMILIES.filter((f) => !(typeof have[f.key] === 'string' && have[f.key].length > 0))
-    .map((f) => f.key);
+  return VARIANT_FAMILIES.filter((f) => variantFor(have, f) === undefined).map((f) => f.key);
 }
 
 /**
@@ -279,6 +310,47 @@ export function classifyVariantShape(
   if (canonicalText !== undefined && capturedText === canonicalText) return 'canonical';
   if ((knownHashes ?? []).includes(variantShapeHash(capturedText))) return 'known-alt';
   return 'new';
+}
+
+/**
+ * What the bake does with one family's scrubbed capture.
+ *
+ *   'fresh'      the capture is the family's variant (`store` is the capture)
+ *   'known-alt'  the capture is an A/B arm seen before, so the variant the
+ *                bundle holds stays (`store` is that variant)
+ *   'inherited'  the capture is what the family's models get with no variant
+ *                of their own, so none is stored
+ *
+ * `inherited` is the wider family's variant for a family within one, else
+ * the base. `widerHashes` is given only for a family within another: every
+ * shape known for the wider family (its memory, the variant the bundle holds
+ * and the one this bake captured). A/B arms are served per request, so a
+ * family that shares the wider family's prompt can capture another of its
+ * arms; such a capture is the wider family's prompt, not a variant.
+ *
+ * With no variant held, a shape in the family's own memory is one it gave up
+ * when a capture matched the wider family, and reads the same way. Storing it
+ * again would move the bundle back and forth between two known arms.
+ */
+export function decideVariant(a: {
+  captured: string;
+  inherited: string;
+  previous?: string;
+  knownHashes?: string[];
+  widerHashes?: string[];
+}): { outcome: 'fresh' | 'known-alt' | 'inherited'; store?: string } {
+  if (a.captured === a.inherited) return { outcome: 'inherited' };
+  const hash = variantShapeHash(a.captured);
+  const own = a.knownHashes ?? [];
+  const sharedWithWider = a.widerHashes !== undefined && a.widerHashes.includes(hash);
+  if (a.previous === undefined || a.previous === '') {
+    if (sharedWithWider || (a.widerHashes !== undefined && own.includes(hash))) return { outcome: 'inherited' };
+    return { outcome: 'fresh', store: a.captured };
+  }
+  if (a.captured !== a.previous && (own.includes(hash) || sharedWithWider)) {
+    return { outcome: 'known-alt', store: a.previous };
+  }
+  return { outcome: 'fresh', store: a.captured };
 }
 
 export function promptVariantsOf(t: TemplateData): Record<string, string> {

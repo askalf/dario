@@ -809,6 +809,18 @@ header('43. describeBundleChange: a rebake described from its two bundles');
   check('a bundle against itself has nothing to report but its provenance stamp', same.otherKeys.length === 0 && formatRebakeChangelog(same).join('\n') === '- **The bundled template was baked again** and reads the same in every field these notes cover.');
 
   check('familyLabel reads a family key as a name', familyLabel('sonnet-5') === 'Sonnet 5' && familyLabel('fable') === 'Fable' && familyLabel('opus-5') === 'Opus 5');
+  check('familyLabel reads a two-part version with a dot', familyLabel('fable-5-2') === 'Fable 5.2' && familyLabel('opus-5-5') === 'Opus 5.5');
+
+  // A family within a wider one: without a variant of its own, its models get the wider family's prompt.
+  const WITHIN = { 'fable-5-2': 'fable' };
+  const withSub = { ...before, system_prompt_variants: { ...before.system_prompt_variants, 'fable-5-2': 'G'.repeat(9400) } };
+  const subBorn = describeBundleChange(before, withSub, WITHIN);
+  check('a changed variant of a family within another names the wider family', JSON.stringify(subBorn.variants) === JSON.stringify([{ key: 'fable-5-2', before: 0, after: 9400, within: 'fable' }]));
+  check('release note: new, in place of the wider family\'s prompt', formatRebakeChangelog(subBorn)[0] === '- **The bundled template holds a system prompt for Fable 5.2.** It is 9400 characters, and requests for Fable 5.2 models built from the bundled template carry it in place of the Fable prompt.', formatRebakeChangelog(subBorn)[0]);
+  const subGone = describeBundleChange(withSub, before, WITHIN);
+  check('release note: gone, back to the wider family\'s prompt', formatRebakeChangelog(subGone)[0] === '- **The bundled template no longer holds a system prompt for Fable 5.2.** Requests for Fable 5.2 models built from it carry the Fable prompt.', formatRebakeChangelog(subGone)[0]);
+  check('summary: gone, back to the wider family\'s prompt', formatRebakeSummary(subGone)[0] === '- **Fable 5.2 system prompt:** removed from the bundle. Requests for Fable 5.2 models built from it carry the Fable prompt.', formatRebakeSummary(subGone)[0]);
+  check('with no map given, a family reads as it did: the base prompt', formatRebakeChangelog(describeBundleChange(withSub, before))[0].endsWith('carry the base prompt.'));
 }
 
 // ──────────────────────────────────────────────────────────────────────

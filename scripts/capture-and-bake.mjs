@@ -51,7 +51,7 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops, variantShapeHash, classifyVariantShape } from '../dist/live-fingerprint.js';
+import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops, variantShapeHash, classifyVariantShape, decideVariant } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, formatVariantOnlySummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
@@ -88,12 +88,14 @@ const BASE_MODEL = TEMPLATE_BASE_MODEL;
 // Models CC ships a DIFFERENT system prompt to. Measured on CC 2.1.220
 // (2026-07-25), two byte-identical passes each, raw chars vs the opus-4-8
 // base at 6664: fable-5 11084, opus-5 9990, sonnet-5 28156. A variant is
-// stored only when it differs from the base after scrubbing.
+// stored only when it differs from the base after scrubbing. A family within
+// another (fable-5-2 within fable) is stored only when it differs from the
+// wider family's variant, which is what its models get otherwise.
 //
 // Derived from VARIANT_FAMILIES, the same table systemPromptForModel selects
 // from at runtime — a family added there is captured here with no second
 // hand-maintained list to forget (the tool_names ≠ tools divergence class).
-const VARIANT_MODELS = VARIANT_FAMILIES.map((f) => ({ key: f.key, model: f.captureModel }));
+const VARIANT_MODELS = VARIANT_FAMILIES.map((f) => ({ key: f.key, model: f.captureModel, within: f.within }));
 async function captureForModel(model, label) {
   const saved = process.env.ANTHROPIC_MODEL;
   process.env.ANTHROPIC_MODEL = model;
@@ -349,18 +351,25 @@ if (residue881.detected) {
 // Fable requests carry Fable's actual CC prompt (cc-template.ts:systemPromptForModel).
 // Stored ONLY when it differs from the base — otherwise runtime falls back to base.
 const prevVariants = promptVariantsOf(prev);
+const prevMemory = prev._variantShapeHashes ?? {};
 const variants = {};
 // Per-family outcome, consumed by the lock-step gate below: 'fresh'
-// (captured, differs from base), 'base' (captured, matches base — the
-// family legitimately has no variant), 'kept' (capture failed, previous
-// bundle's variant retained), 'missing' (capture failed AND there is no
-// previous variant to keep).
+// (captured, stored), 'known-alt' (captured a known A/B arm, the previous
+// variant stays), 'inherited' (captured, and it is what the family's models
+// get with no variant of their own: the base, or the wider family's variant
+// for a family within one), 'kept' (capture failed, previous bundle's variant
+// retained), 'missing' (capture failed AND there is no previous variant to
+// keep), 'unmeasured' (the same for a family within another, whose models
+// keep getting the wider family's variant).
 const variantOutcomes = {};
 const capturedArmHashes = {};   // key -> sha256 of the arm THIS run captured (for the shape memory)
-for (const { key, model } of VARIANT_MODELS) {
+// A family within another is decided against the variant the wider family
+// ends this bake with, so the wider families are captured first.
+const captureOrder = [...VARIANT_MODELS.filter((v) => !v.within), ...VARIANT_MODELS.filter((v) => v.within)];
+for (const { key, model, within } of captureOrder) {
   const keepPrevious = () => {
     if (prevVariants[key]) { variants[key] = prevVariants[key]; variantOutcomes[key] = 'kept'; }
-    else variantOutcomes[key] = 'missing';
+    else variantOutcomes[key] = within ? 'unmeasured' : 'missing';
   };
   try {
     const capturedVariant = await captureForModel(model, `${key}-variant`);
@@ -370,9 +379,11 @@ for (const { key, model } of VARIANT_MODELS) {
       continue;
     }
     const vScrubbed = scrubTemplate(capturedVariant);
-    if (!vScrubbed.system_prompt || vScrubbed.system_prompt === scrubbed.system_prompt) {
-      log(`${key}-variant matches base — no separate variant stored.`);
-      variantOutcomes[key] = 'base';
+    const inherited = (within && variants[within]) || scrubbed.system_prompt;
+    const inheritedName = within && variants[within] ? `the ${within} variant` : 'base';
+    if (!vScrubbed.system_prompt || vScrubbed.system_prompt === inherited) {
+      log(`${key}-variant matches ${inheritedName} — no separate variant stored.`);
+      variantOutcomes[key] = 'inherited';
       continue;
     }
     const vResidual = findUserPathHits(vScrubbed.system_prompt);
@@ -387,18 +398,34 @@ for (const { key, model } of VARIANT_MODELS) {
     // in 25h flip-flopping fable between the SAME two byte-stable shapes. A
     // captured shape already in the known set keeps the previous canonical —
     // the bundle only moves when CC serves a shape it has never served before.
-    const cls = classifyVariantShape(vScrubbed.system_prompt, prevVariants[key], (prev._variantShapeHashes ?? {})[key]);
-    if (cls === 'known-alt') {
-      variants[key] = prevVariants[key];
-      variantOutcomes[key] = 'known-alt';
-      log(`${key} system-prompt variant: captured a KNOWN A/B arm (${vScrubbed.system_prompt.length} chars) — keeping canonical (${prevVariants[key].length} chars).`);
-      capturedArmHashes[key] = variantShapeHash(vScrubbed.system_prompt);
+    // For a family within another, the wider family's known shapes count too:
+    // a capture that is one of them is the wider family's prompt.
+    const widerHashes = within
+      ? [...new Set([
+        ...(prevMemory[within] ?? []),
+        ...[prevVariants[within], variants[within]].filter(Boolean).map(variantShapeHash),
+        ...(capturedArmHashes[within] ? [capturedArmHashes[within]] : []),
+      ])]
+      : undefined;
+    const decision = decideVariant({
+      captured: vScrubbed.system_prompt,
+      inherited,
+      previous: prevVariants[key],
+      knownHashes: prevMemory[key],
+      widerHashes,
+    });
+    variantOutcomes[key] = decision.outcome;
+    if (decision.outcome === 'inherited') {
+      log(`${key}-variant is a known arm of the ${within} prompt (${vScrubbed.system_prompt.length} chars) — no separate variant stored.`);
       continue;
     }
-    variants[key] = vScrubbed.system_prompt;
-    variantOutcomes[key] = 'fresh';
+    variants[key] = decision.store;
     capturedArmHashes[key] = variantShapeHash(vScrubbed.system_prompt);
-    log(`${key} system-prompt variant: base ${scrubbed.system_prompt.length} → ${key} ${variants[key].length} chars`);
+    if (decision.outcome === 'known-alt') {
+      log(`${key} system-prompt variant: captured a KNOWN A/B arm (${vScrubbed.system_prompt.length} chars) — keeping canonical (${prevVariants[key].length} chars).`);
+      continue;
+    }
+    log(`${key} system-prompt variant: ${inheritedName} ${inherited.length} → ${key} ${variants[key].length} chars`);
   } catch (e) {
     log(`warning: ${key}-variant capture error (${e.message}) — keeping previous variant if any.`);
     keepPrevious();
@@ -415,6 +442,10 @@ for (const { key, model } of VARIANT_MODELS) {
 // as drift. A captured-and-matches-base outcome stays allowed — that is
 // a measured result, and prev-had-one → variant-retired is real drift
 // for --check to report.
+//
+// A family within another is not held to this: with no variant of its own
+// before or after, its models get the wider family's variant either way,
+// and nothing in the bundle moves.
 const missingVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'missing');
 if (missingVariants.length > 0) {
   if (ALLOW_MISSING_VARIANT) {
@@ -425,6 +456,10 @@ if (missingVariants.length > 0) {
     log('error: infra failure, not CC drift — fix the capture, or bypass deliberately with --allow-missing-variant.');
     process.exit(1);
   }
+}
+const unmeasured = VARIANT_MODELS.filter((v) => variantOutcomes[v.key] === 'unmeasured');
+if (unmeasured.length > 0) {
+  log(`warning: capture failed for ${unmeasured.map((v) => v.key).join(', ')}, and the bundle holds no variant of ${unmeasured.length === 1 ? 'its' : 'their'} own. ${unmeasured.length === 1 ? 'Its' : 'Their'} models keep the wider family's prompt (${[...new Set(unmeasured.map((v) => v.within))].join(', ')}), unverified this run.`);
 }
 const keptVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'kept');
 if (keptVariants.length > 0) {
