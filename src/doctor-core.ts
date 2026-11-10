@@ -31,6 +31,8 @@ import {
   checkCCCompat,
   findInstalledCC,
   missingVariantFamilies,
+  promptVariantsOf,
+  variantFor,
   SUPPORTED_CC_RANGE,
   CURRENT_SCHEMA_VERSION,
   compareVersions,
@@ -841,10 +843,14 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   try {
     const missing = missingVariantFamilies(CC_TEMPLATE);
     if (missing.length === 0) {
+      // A family that may share the base and holds no variant is on the base
+      // by design, and the row says so instead of counting it as a variant.
+      const held = promptVariantsOf(CC_TEMPLATE);
+      const names = VARIANT_FAMILIES.map((f) => (variantFor(held, f) === undefined ? `${f.key} on the base prompt` : f.key));
       checks.push({
         status: 'ok',
         label: 'Prompt variants',
-        detail: `all ${VARIANT_FAMILIES.length} model families covered (${VARIANT_FAMILIES.map((f) => f.key).join(', ')})`,
+        detail: `all ${VARIANT_FAMILIES.length} model families covered (${names.join(', ')})`,
       });
     } else {
       checks.push({

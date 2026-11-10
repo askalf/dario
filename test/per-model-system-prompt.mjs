@@ -146,9 +146,20 @@ header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
   // routing below goes through the SAME table the bake derives its model
   // list from, so this asserts the loaded template actually carries what
   // the table promises rather than falling back to the base.
+  const bundledVariants = promptVariantsOf(CC_TEMPLATE);
   for (const f of VARIANT_FAMILIES) {
+    // A family that may share the base routes to the base until a bake stores
+    // a variant for it.
+    if (f.mayShareBase && !bundledVariants[f.key]) {
+      check(`${f.key}: no variant held, so its capture model gets the base`,
+        systemPromptForModel(f.captureModel) === CC_SYSTEM_PROMPT);
+      continue;
+    }
     check(`${f.key}: capture model routes to a non-base variant`,
       systemPromptForModel(f.captureModel) !== CC_SYSTEM_PROMPT);
+  }
+  for (const f of VARIANT_FAMILIES.filter((x) => x.mayShareBase)) {
+    check(`${f.key}: a family that may share the base sits within none`, f.within === undefined);
   }
   const at = (key) => VARIANT_FAMILIES.findIndex((f) => f.key === key);
   check('matcher precedence: fable is ahead of the -5 arms (never falls into them)',
@@ -187,6 +198,17 @@ header('a model version within a family: its own prompt, else the family\'s');
   check('claude-opus-5-5 and claude-opus-5', familyOf('claude-opus-5-5') === 'opus-5-5' && familyOf('claude-opus-5') === 'opus-5' && familyOf('claude-opus-5-20260715') === 'opus-5');
   check('claude-sonnet-5-5 and claude-sonnet-5', familyOf('claude-sonnet-5-5[1m]') === 'sonnet-5-5' && familyOf('claude-sonnet-5') === 'sonnet-5');
   check('a two-digit minor is no family\'s', familyOf('claude-opus-5-50') === 'opus-5' && familyOf('claude-fable-5-25') === 'fable');
+  check('claude-haiku-5-5 and a dated id of it', familyOf('claude-haiku-5-5') === 'haiku-5-5' && familyOf('claude-haiku-5-5-20261001') === 'haiku-5-5');
+  check('Haiku 4.5 and a two-digit Haiku minor are no family\'s', familyOf('claude-haiku-4-5') === undefined && familyOf('claude-haiku-5-50') === undefined);
+
+  // A family that may share the base: its own variant, else the base, and never reported missing.
+  check('own variant wins for a family that may share the base', variantFor({ ...held, 'haiku-5-5': 'HAIKU55' }, fam('haiku-5-5')) === 'HAIKU55');
+  check('none of its own: undefined, which leaves the base', variantFor(held, fam('haiku-5-5')) === undefined);
+  const required = { fable: 'F', 'opus-5': 'O', 'sonnet-5': 'S' };
+  check('a template with no variant for it misses no family',
+    missingVariantFamilies({ system_prompt: 'BASE', system_prompt_variants: required }).length === 0);
+  check('a template with no Sonnet 5 variant still misses Sonnet 5 and what sits within it',
+    JSON.stringify(missingVariantFamilies({ system_prompt: 'BASE', system_prompt_variants: { fable: 'F', 'opus-5': 'O' } })) === JSON.stringify(['sonnet-5-5', 'sonnet-5']));
 
   // With the loaded template: the model version's own variant when it holds one, else the family's.
   const loaded = promptVariantsOf(CC_TEMPLATE);
