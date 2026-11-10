@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **The template watcher checks whether Haiku 5.5 has a system prompt of its own.** Requests for Haiku 5.5 built from the bundled template carry the base prompt, and nothing had checked whether Claude Code sends that model another one, as it does for the other 5.5 models. This version changes no request: the bundled template holds no Haiku 5.5 prompt. The watcher's runs now capture Haiku 5.5 with the other models. If a capture differs from the base, a template rebake stores it and requests for Haiku 5.5 carry it from that release on. If it matches the base, nothing changes. `dario doctor` lists `haiku-5-5` in its "Prompt variants" row, as `haiku-5-5 on the base prompt` while the template holds none for it.
+
 ## [6.23.7] - 2026-11-10
 
 - **Claude Code 2.1.322 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.321.

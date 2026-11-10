@@ -221,6 +221,15 @@ export interface VariantFamily {
    * the bundle may hold no variant for it, which is a measured result.
    */
   within?: string;
+  /**
+   * Set for a family not yet known to get a prompt of its own: CC may send
+   * its models the shared base. The bake stores its capture only when that
+   * differs from the base, so the bundle may hold no variant for it, and its
+   * models then get the base. A family without this flag (and with nothing
+   * it sits within) is one measured to differ, and a bundle that holds no
+   * variant for it is a fault.
+   */
+  mayShareBase?: true;
 }
 
 /**
@@ -238,8 +247,11 @@ export interface VariantFamily {
  * list and the selection arms were maintained by hand in two files, the
  * exact divergence class that shipped tool_names ≠ tools twice.
  *
- * Adding a family here is safe even if it turns out to share the base
- * prompt: the bake stores a variant only when the capture differs.
+ * A family added to find out whether it has a prompt of its own takes
+ * `mayShareBase` (or `within`, when a wider family's matcher accepts its
+ * models): the bake stores its capture only when that differs from what its
+ * models get anyway, and a bundle with no variant for it passes the
+ * invariants. Without either, the bundle must hold a variant.
  */
 export const VARIANT_FAMILIES: readonly VariantFamily[] = [
   // Fable's prompt names the model version ("This iteration of Claude is
@@ -255,6 +267,10 @@ export const VARIANT_FAMILIES: readonly VariantFamily[] = [
   { key: 'opus-5', captureModel: 'claude-opus-5', matches: (m) => /opus-5(?!\d)/.test(m) },
   { key: 'sonnet-5-5', captureModel: 'claude-sonnet-5-5', matches: (m) => /sonnet-5-5(?!\d)/.test(m), within: 'sonnet-5' },
   { key: 'sonnet-5', captureModel: 'claude-sonnet-5', matches: (m) => /sonnet-5(?!\d)/.test(m) },
+  // No Haiku has had a prompt of its own so far (Haiku 4.5 gets the base),
+  // and Haiku 5.5 has not been captured yet. The other 5.5 models each turned
+  // out to have one, close to the base in size.
+  { key: 'haiku-5-5', captureModel: 'claude-haiku-5-5', matches: (m) => /haiku-5-5(?!\d)/.test(m), mayShareBase: true },
 ];
 
 /**
@@ -274,13 +290,15 @@ export function variantFor(variants: Record<string, string>, family: VariantFami
  * Families from VARIANT_FAMILIES that `t` carries no variant for — i.e.
  * models that would silently get the shared BASE prompt instead of CC's
  * model-specific one. A family within another counts as carried while the
- * wider family's variant is. Non-empty on a healthy current bundle means the
+ * wider family's variant is, and a `mayShareBase` family is never missing:
+ * the base is what its capture measured, or all that is known for it.
+ * Non-empty on a healthy current bundle means the
  * lock-step is degraded: a bad bake, an unreadable bundle behind a live
  * capture, or a pre-variants live cache shadowing the bundle.
  */
 export function missingVariantFamilies(t: TemplateData): string[] {
   const have = promptVariantsOf(t);
-  return VARIANT_FAMILIES.filter((f) => variantFor(have, f) === undefined).map((f) => f.key);
+  return VARIANT_FAMILIES.filter((f) => !f.mayShareBase && variantFor(have, f) === undefined).map((f) => f.key);
 }
 
 /**

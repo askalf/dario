@@ -95,7 +95,7 @@ const BASE_MODEL = TEMPLATE_BASE_MODEL;
 // Derived from VARIANT_FAMILIES, the same table systemPromptForModel selects
 // from at runtime — a family added there is captured here with no second
 // hand-maintained list to forget (the tool_names ≠ tools divergence class).
-const VARIANT_MODELS = VARIANT_FAMILIES.map((f) => ({ key: f.key, model: f.captureModel, within: f.within }));
+const VARIANT_MODELS = VARIANT_FAMILIES.map((f) => ({ key: f.key, model: f.captureModel, within: f.within, mayShareBase: f.mayShareBase === true }));
 async function captureForModel(model, label) {
   const saved = process.env.ANTHROPIC_MODEL;
   process.env.ANTHROPIC_MODEL = model;
@@ -359,17 +359,18 @@ const variants = {};
 // get with no variant of their own: the base, or the wider family's variant
 // for a family within one), 'kept' (capture failed, previous bundle's variant
 // retained), 'missing' (capture failed AND there is no previous variant to
-// keep), 'unmeasured' (the same for a family within another, whose models
-// keep getting the wider family's variant).
+// keep), 'unmeasured' (the same for a family within another or one that may
+// share the base, whose models keep getting the wider family's variant or
+// the base).
 const variantOutcomes = {};
 const capturedArmHashes = {};   // key -> sha256 of the arm THIS run captured (for the shape memory)
 // A family within another is decided against the variant the wider family
 // ends this bake with, so the wider families are captured first.
 const captureOrder = [...VARIANT_MODELS.filter((v) => !v.within), ...VARIANT_MODELS.filter((v) => v.within)];
-for (const { key, model, within } of captureOrder) {
+for (const { key, model, within, mayShareBase } of captureOrder) {
   const keepPrevious = () => {
     if (prevVariants[key]) { variants[key] = prevVariants[key]; variantOutcomes[key] = 'kept'; }
-    else variantOutcomes[key] = within ? 'unmeasured' : 'missing';
+    else variantOutcomes[key] = within || mayShareBase ? 'unmeasured' : 'missing';
   };
   try {
     const capturedVariant = await captureForModel(model, `${key}-variant`);
@@ -443,9 +444,9 @@ for (const { key, model, within } of captureOrder) {
 // a measured result, and prev-had-one → variant-retired is real drift
 // for --check to report.
 //
-// A family within another is not held to this: with no variant of its own
-// before or after, its models get the wider family's variant either way,
-// and nothing in the bundle moves.
+// A family within another, or one that may share the base, is not held to
+// this: with no variant of its own before or after, its models get the wider
+// family's variant or the base either way, and nothing in the bundle moves.
 const missingVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'missing');
 if (missingVariants.length > 0) {
   if (ALLOW_MISSING_VARIANT) {
@@ -459,7 +460,8 @@ if (missingVariants.length > 0) {
 }
 const unmeasured = VARIANT_MODELS.filter((v) => variantOutcomes[v.key] === 'unmeasured');
 if (unmeasured.length > 0) {
-  log(`warning: capture failed for ${unmeasured.map((v) => v.key).join(', ')}, and the bundle holds no variant of ${unmeasured.length === 1 ? 'its' : 'their'} own. ${unmeasured.length === 1 ? 'Its' : 'Their'} models keep the wider family's prompt (${[...new Set(unmeasured.map((v) => v.within))].join(', ')}), unverified this run.`);
+  const fallbacks = [...new Set(unmeasured.map((v) => (v.within ? `the ${v.within} prompt` : 'the base prompt')))].join(', ');
+  log(`warning: capture failed for ${unmeasured.map((v) => v.key).join(', ')}, and the bundle holds no variant of ${unmeasured.length === 1 ? 'its' : 'their'} own. ${unmeasured.length === 1 ? 'Its' : 'Their'} models keep the prompt they get without one (${fallbacks}), unverified this run.`);
 }
 const keptVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'kept');
 if (keptVariants.length > 0) {
