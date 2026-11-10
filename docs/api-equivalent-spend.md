@@ -28,6 +28,15 @@ their own row, `claude-haiku-5-5[long]`, and each row is priced at its own
 rate. Haiku 5.5 rows written before that key existed hold both kinds and are
 priced at the short-prompt rate.
 
+A cache write has two prices on Claude: 1.25× input into the five-minute
+cache, 2× input into the one-hour cache. dario asks for the one-hour cache on
+subscription traffic, as Claude Code does, so most writes are the dearer kind.
+The response says how many of its cache-write tokens went to each, and a row
+keeps the one-hour count as `cacheCreate1hTokens`: a share of
+`cacheCreateTokens`, never an addition to it. Rows written before that field
+existed have no share and are priced at the five-minute rate, which reads low
+for them.
+
 ## What counts
 
 Only responses with a 2xx status. A 429 carries no tokens and a 5xx bills

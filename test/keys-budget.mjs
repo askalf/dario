@@ -106,8 +106,11 @@ header('the reservation');
   const price = (model, at, cell) => costOfTokens(model, at, cell);
   const r = requestBudgetReservation('claude-sonnet-5', 3_000, 500, price, NOW);
   check('tokens = body/3 + max_tokens', r.tokens === 1_000 + 500 && r.count === 1, r);
-  const expect = costOfTokens('claude-sonnet-5', NOW, { requests: 1, inputTokens: 0, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 1_000 });
-  check('usd = body as cache-create + max_tokens as output', Math.abs(r.usd - expect) < 1e-9, { r, expect });
+  const expect = costOfTokens('claude-sonnet-5', NOW, { requests: 1, inputTokens: 0, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 1_000, cacheCreate1hTokens: 1_000 });
+  check('usd = body as a one-hour cache write + max_tokens as output', Math.abs(r.usd - expect) < 1e-9, { r, expect });
+  // Sonnet 5: 1,000 prompt tokens at $4 per 1M (the one-hour write) and 500 output at $10.
+  check('which is the costliest bucket a prompt token can land in', Math.abs(r.usd - (1_000 * 4 + 500 * 10) / 1e6) < 1e-12
+    && r.usd > costOfTokens('claude-sonnet-5', NOW, { requests: 1, inputTokens: 0, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 1_000 }), r);
   const withTemplate = requestBudgetReservation('claude-sonnet-5', 3_000, 500, price, NOW, 90_000);
   check('extra prompt bytes (the template) are reserved too', withTemplate.tokens === Math.ceil(93_000 / BUDGET_BYTES_PER_TOKEN) + 500 && withTemplate.usd > r.usd, withTemplate);
   const noMax = requestBudgetReservation('claude-sonnet-5', 300, null, price, NOW);

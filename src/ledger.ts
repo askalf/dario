@@ -51,6 +51,13 @@ export interface LedgerCell {
   cacheReadTokens: number;
   cacheCreateTokens: number;
   /**
+   * Cache-write tokens INSIDE cacheCreateTokens that went to the one-hour
+   * cache, a share and never an addition. They are priced at the one-hour
+   * rate. Absent on rows written before the field existed and on rows with
+   * none; both read as 0, which prices every write at the five-minute rate.
+   */
+  cacheCreate1hTokens?: number;
+  /**
    * Thinking tokens INSIDE outputTokens, a share and never an addition (the
    * model's reasoning is billed as output). Counted from the usage block the
    * backend returns; rows written before the field existed read as 0.
@@ -88,6 +95,8 @@ export interface LedgerConsumerSummary {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Of cacheCreateTokens, how many were written to the one-hour cache. */
+  cacheCreate1hTokens: number;
   /** Of outputTokens, how many were thinking; and what that thinking would have cost at the model's output rate (both buckets). */
   thinkingTokens: number;
   thinkingCost: number;
@@ -105,6 +114,8 @@ export interface LedgerModelSummary {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Of the covered cacheCreateTokens, how many were written to the one-hour cache. */
+  cacheCreate1hTokens: number;
   /** Of the covered outputTokens, how many were thinking. */
   thinkingTokens: number;
   /** API-equivalent cost of this model's covered traffic, USD. */
@@ -130,8 +141,8 @@ export interface LedgerSummary {
   apiEquivalentCost: number;
   /** What metered traffic (API key, paid overage) actually cost at list price, USD. */
   meteredCost: number;
-  /** Covered token totals. `thinking` is the share of `output` that was reasoning. */
-  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; thinking: number };
+  /** Covered token totals. `thinking` is the share of `output` that was reasoning, `cacheCreate1h` the share of `cacheCreate` written to the one-hour cache. */
+  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; cacheCreate1h: number; thinking: number };
   /** The part of apiEquivalentCost that paid for thinking: covered thinking tokens at each model's output rate, USD. */
   thinkingCost: number;
   perProvider: Record<PricingProvider, { requests: number; apiEquivalentCost: number }>;
@@ -203,13 +214,24 @@ function isCell(v: unknown): v is LedgerCell {
 /**
  * A cell as read from disk, with the fields added after the file was written
  * filled in: `thinkingTokens` is 0 on rows older than the field (and never
- * above the output count it is a share of).
+ * above the output count it is a share of). `cacheCreate1hTokens` is kept
+ * only when it is a positive number, and never above the cache writes it is
+ * a share of.
  */
 function cleanCell(c: LedgerCell): LedgerCell {
   const raw = (c as Partial<LedgerCell>).thinkingTokens;
   const thinking = typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? Math.min(raw, c.outputTokens) : 0;
+  const raw1h = (c as Partial<LedgerCell>).cacheCreate1hTokens;
+  const write1h = typeof raw1h === 'number' && Number.isFinite(raw1h) && raw1h > 0 ? Math.min(raw1h, c.cacheCreateTokens) : 0;
   return { requests: c.requests, inputTokens: c.inputTokens, outputTokens: c.outputTokens,
-           cacheReadTokens: c.cacheReadTokens, cacheCreateTokens: c.cacheCreateTokens, thinkingTokens: thinking };
+           cacheReadTokens: c.cacheReadTokens, cacheCreateTokens: c.cacheCreateTokens,
+           ...(write1h > 0 ? { cacheCreate1hTokens: write1h } : {}), thinkingTokens: thinking };
+}
+
+/** One record's one-hour cache writes: 0 when absent, and never above its cache writes. */
+function oneHourWrites(record: Pick<RequestRecord, 'cacheCreateTokens' | 'cacheCreate1hTokens'>): number {
+  const raw = record.cacheCreate1hTokens;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.min(raw, record.cacheCreateTokens) : 0;
 }
 
 /**
@@ -268,6 +290,8 @@ function addCell(row: LedgerRow, bucket: LedgerBucket, record: RequestRecord): v
   cell.outputTokens += record.outputTokens;
   cell.cacheReadTokens += record.cacheReadTokens;
   cell.cacheCreateTokens += record.cacheCreateTokens;
+  const write1h = oneHourWrites(record);
+  if (write1h > 0) cell.cacheCreate1hTokens = (cell.cacheCreate1hTokens ?? 0) + write1h;
   const thinking = Number.isFinite(record.thinkingTokens) && record.thinkingTokens > 0 ? record.thinkingTokens : 0;
   cell.thinkingTokens = (cell.thinkingTokens ?? 0) + Math.min(thinking, record.outputTokens);
 }
@@ -313,7 +337,7 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
   for (const [day, byConsumer] of Object.entries(file.consumers ?? {})) {
     const at = dayMs(day);
     for (const [consumer, models] of Object.entries(byConsumer)) {
-      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0, thinkingCost: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
+      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, cacheCreate1hTokens: 0, thinkingTokens: 0, thinkingCost: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
       if (day > c.lastDay) c.lastDay = day;
       for (const [model, row] of Object.entries(models)) {
         if (row.covered) {
@@ -347,6 +371,7 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
       outputTokens: c.outputTokens,
       cacheReadTokens: c.cacheReadTokens,
       cacheCreateTokens: c.cacheCreateTokens,
+      cacheCreate1hTokens: c.cacheCreate1hTokens,
       thinkingTokens: c.thinkingTokens,
       thinkingCost: round(c.thinkingCost),
       recent: { today: round(c.recent.today), last7d: round(c.recent.last7d), last30d: round(c.recent.last30d) },
@@ -381,12 +406,13 @@ export function consumerDayUsage(file: LedgerFile, consumer: string, now: number
   return out;
 }
 
-type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens' | 'thinkingTokens'>;
+type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens' | 'thinkingTokens'> & { cacheCreate1hTokens: number };
 function addTokens(into: TokenTotals, cell: LedgerCell): void {
   into.inputTokens += cell.inputTokens;
   into.outputTokens += cell.outputTokens;
   into.cacheReadTokens += cell.cacheReadTokens;
   into.cacheCreateTokens += cell.cacheCreateTokens;
+  into.cacheCreate1hTokens += cell.cacheCreate1hTokens ?? 0;
   into.thinkingTokens += cell.thinkingTokens ?? 0;
 }
 
@@ -424,7 +450,7 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     anthropic: { requests: 0, apiEquivalentCost: 0 },
     openai: { requests: 0, apiEquivalentCost: 0 },
   };
-  const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, thinking: 0 };
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, cacheCreate1h: 0, thinking: 0 };
   let requests = 0;
   let covered = 0;
   let metered = 0;
@@ -436,7 +462,7 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     for (const [model, row] of Object.entries(models)) {
       const m = (perModel[model] ??= {
         provider: providerOfModel(model), requests: 0,
-        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, cacheCreate1hTokens: 0, thinkingTokens: 0,
         apiEquivalentCost: 0, meteredCost: 0,
       });
       if (row.covered) {
@@ -449,11 +475,13 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
         m.outputTokens += row.covered.outputTokens;
         m.cacheReadTokens += row.covered.cacheReadTokens;
         m.cacheCreateTokens += row.covered.cacheCreateTokens;
+        m.cacheCreate1hTokens += row.covered.cacheCreate1hTokens ?? 0;
         m.thinkingTokens += row.covered.thinkingTokens ?? 0;
         tokens.input += row.covered.inputTokens;
         tokens.output += row.covered.outputTokens;
         tokens.cacheRead += row.covered.cacheReadTokens;
         tokens.cacheCreate += row.covered.cacheCreateTokens;
+        tokens.cacheCreate1h += row.covered.cacheCreate1hTokens ?? 0;
         tokens.thinking += row.covered.thinkingTokens ?? 0;
         perProvider[m.provider].requests += row.covered.requests;
         perProvider[m.provider].apiEquivalentCost += cost;
@@ -709,7 +737,7 @@ export function formatLedgerConsumers(s: LedgerSummary, limit: number = 20): str
     const models = c.models.slice(0, 2).map(shortModelName).join(', ');
     lines.push(`    ${consumer.slice(0, width).padEnd(width)} ${formatUsd(c.apiEquivalentCost).padStart(9)} · ${formatUsd(c.recent.today).padStart(8)} · ${formatUsd(c.recent.last7d).padStart(8)} · ${formatUsd(c.recent.last30d).padStart(8)}   ${c.requests.toLocaleString('en-US')} req${c.requests === 1 ? '' : 's'}${models ? `, ${models}` : ''}${c.meteredCost > 0 ? `, ${formatUsd(c.meteredCost)} metered` : ''}`);
     const thinking = c.thinkingTokens > 0 ? ` · thinking ${formatTokenCount(c.thinkingTokens)} (${thinkingPercent(c.thinkingTokens, c.outputTokens)}% of out, ${formatUsd(c.thinkingCost)})` : '';
-    lines.push(`    ${' '.repeat(width)} in ${formatTokenCount(c.inputTokens)} · out ${formatTokenCount(c.outputTokens)} · cache read ${formatTokenCount(c.cacheReadTokens)} · cache write ${formatTokenCount(c.cacheCreateTokens)}${thinking}`);
+    lines.push(`    ${' '.repeat(width)} in ${formatTokenCount(c.inputTokens)} · out ${formatTokenCount(c.outputTokens)} · cache read ${formatTokenCount(c.cacheReadTokens)} · cache write ${formatTokenCount(c.cacheCreateTokens)}${c.cacheCreate1hTokens > 0 ? ` (${formatTokenCount(c.cacheCreate1hTokens)} one-hour)` : ''}${thinking}`);
   }
   if (entries.length > limit) lines.push(`    … and ${entries.length - limit} more`);
   return lines;
