@@ -162,7 +162,7 @@ Log into [console.anthropic.com](https://console.anthropic.com) → Usage. **You
 
 ## How dario protects you from the classifier filter
 
-Anthropic's billing classifier fingerprints the string `openclaw.inbound_meta.v1` and routes any request containing it to extra-usage billing — not subscription. This was reproduced in [dario discussion #178](https://github.com/askalf/dario/discussions/178) following Theo Browne's original finding.
+Anthropic's billing classifier fingerprints the string `openclaw.inbound_meta.v1` and routes any request containing it to extra-usage billing — not subscription. We reproduced it following Theo Browne's original finding.
 
 The filter triggers on the `openclaw.inbound_meta.v1` namespace appearing in the request body — which is easy to hit accidentally. If you've ever made a commit message or branch name containing that string in any of your repos, Claude Code's environment block (which CC adds to its prompt) will surface those names back to the model in the system prompt, and the classifier flips your request.
 

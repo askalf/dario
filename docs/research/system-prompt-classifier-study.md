@@ -32,7 +32,7 @@ Seven variants, one upstream request each, classifier readout from the `anthropi
 
 **Result: 7/7 routed to `five_hour`.** None of these mutations affect the billing classification. The system array is not a fingerprint axis.
 
-This is consistent with what we documented in [Discussion #178](https://github.com/askalf/dario/discussions/178) for the OpenClaw classifier: Anthropic's reclassification logic operates on specific structural inputs (schema namespace strings in commit metadata, body field order, beta flags, tool names), not on free-form text content of the system prompt. The system prompt is for the model. The classifier reads other channels.
+This is consistent with what we measured for the OpenClaw classifier ([openclaw-walkthrough.md](../integrations/openclaw-walkthrough.md)): Anthropic's reclassification logic operates on specific structural inputs (schema namespace strings in commit metadata, body field order, beta flags, tool names), not on free-form text content of the system prompt. The system prompt is for the model. The classifier reads other channels.
 
 ### Test 2 — What does removing CC's behavioral constraints actually produce?
 
