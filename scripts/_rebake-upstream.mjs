@@ -28,20 +28,35 @@ const answersOf = (probe) => (Array.isArray(probe?.upstream) ? probe.upstream : 
  * spent, every Fable probe gets 429 until it resets, and the check gives no
  * verdict on any bundle until then. So Fable's own prompt variant and its
  * fallback-credit beta are not checked here. The tools and betas it shares
- * with the other models are, by their probes.
+ * with the other models are, by their probes. A family within an unprobed
+ * one (fable-5-2 within fable) is the same models on the same credit, and
+ * gets no probe either.
  */
 export const UNPROBED_FAMILIES = new Set(['fable']);
 
 /**
- * The probes the check sends, as { model, key }: the base model (key null),
- * then the capture model of every variant family not in UNPROBED_FAMILIES,
- * with its family key. Pure.
+ * The probes the check sends, as { model, key, within }: the base model (key
+ * null), then the capture model of every variant family that is neither in
+ * UNPROBED_FAMILIES nor within one that is, with its family key and the key
+ * of the family it sits within (null for none). Pure.
  */
 export function probeModels(baseModel, families) {
   return [
-    { model: baseModel, key: null },
-    ...families.filter((f) => !UNPROBED_FAMILIES.has(f.key)).map((f) => ({ model: f.captureModel, key: f.key })),
+    { model: baseModel, key: null, within: null },
+    ...families.filter((f) => !UNPROBED_FAMILIES.has(f.key) && !UNPROBED_FAMILIES.has(f.within))
+      .map((f) => ({ model: f.captureModel, key: f.key, within: f.within ?? null })),
   ];
+}
+
+/**
+ * The prompt the bundle holds for one probe: its family's variant, else the
+ * variant of the family that one sits within, else the base. The same order
+ * the request builder reads them in.
+ */
+export function probePrompt(bundle, probe) {
+  const variants = bundle.system_prompt_variants ?? {};
+  const held = (key) => (typeof variants[key] === 'string' && variants[key].length > 0 ? variants[key] : undefined);
+  return (probe.key === null ? undefined : held(probe.key) ?? held(probe.within)) ?? bundle.system_prompt;
 }
 
 /**

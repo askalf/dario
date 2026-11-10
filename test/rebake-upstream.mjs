@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freePort } from './helpers/free-port.mjs';
-import { probeTools, probeBody, probeModels, carriedBundleTools, missingFromSent, probeVerdict, summarizeProbes, errorDetail, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
+import { probeTools, probeBody, probeModels, probePrompt, UNPROBED_FAMILIES, carriedBundleTools, missingFromSent, probeVerdict, summarizeProbes, errorDetail, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -127,9 +127,19 @@ header('which models are probed');
   const { TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } = await import('../dist/live-fingerprint.js');
   const probed = probeModels(TEMPLATE_BASE_MODEL, VARIANT_FAMILIES);
   check('the base model first, with no variant key', probed[0].model === TEMPLATE_BASE_MODEL && probed[0].key === null);
-  check('every variant family but Fable, by its capture model', JSON.stringify(probed.slice(1).map((p) => p.key)) === JSON.stringify(VARIANT_FAMILIES.filter((f) => f.key !== 'fable').map((f) => f.key))
+  const unprobed = (f) => UNPROBED_FAMILIES.has(f.key) || UNPROBED_FAMILIES.has(f.within);
+  check('every variant family but Fable and the families within it, by its capture model', JSON.stringify(probed.slice(1).map((p) => p.key)) === JSON.stringify(VARIANT_FAMILIES.filter((f) => !unprobed(f)).map((f) => f.key))
     && probed.slice(1).every((p) => p.model === VARIANT_FAMILIES.find((f) => f.key === p.key).captureModel));
-  check('no Fable probe', !probed.some((p) => p.key === 'fable' || p.model.includes('fable')), JSON.stringify(probed));
+  check('no Fable probe, for any Fable version', !probed.some((p) => p.key === 'fable' || p.model.includes('fable')), JSON.stringify(probed));
+  check('a probe carries the family its own sits within', probed.slice(1).every((p) => p.within === (VARIANT_FAMILIES.find((f) => f.key === p.key).within ?? null)));
+  const families = [{ key: 'a-2', captureModel: 'm-a-2', within: 'a' }, { key: 'a', captureModel: 'm-a' }, { key: 'f-2', captureModel: 'm-f-2', within: 'fable' }];
+  check('a family within an unprobed one is not probed', JSON.stringify(probeModels('base', families).map((p) => p.model)) === JSON.stringify(['base', 'm-a-2', 'm-a']));
+  const held = { system_prompt: 'B', system_prompt_variants: { a: 'A' } };
+  const sub = { model: 'm-a-2', key: 'a-2', within: 'a' };
+  check('a probe expects its family\'s own variant', probePrompt({ ...held, system_prompt_variants: { a: 'A', 'a-2': 'A2' } }, sub) === 'A2');
+  check('else the variant of the family it sits within', probePrompt(held, sub) === 'A');
+  check('else the base', probePrompt({ system_prompt: 'B' }, sub) === 'B' && probePrompt(held, { model: 'm-x', key: 'x', within: null }) === 'B');
+  check('the base probe expects the base', probePrompt(held, { model: 'base', key: null, within: null }) === 'B');
 }
 
 header('the run');

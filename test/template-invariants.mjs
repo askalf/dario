@@ -343,18 +343,29 @@ header('bundled artifact: variant families agree with VARIANT_FAMILIES (dario#lo
 //     --allow-missing-variant bake or a hand-edited bundle can still do it);
 //   - a variant key in the bundle but not the table = dead weight no
 //     selection arm can ever serve.
+// A family within another (fable-5-2 within fable) is held to less: the bake
+// stores its capture only when that differs from the wider family's variant,
+// so the bundle may hold none for it. One it does hold must differ from the
+// wider family's, or it is dead weight of the same kind.
 {
   const bundled = JSON.parse(
     readFileSync(new URL('../dist/cc-template-data.json', import.meta.url), 'utf8'),
   );
   const variants = bundled.system_prompt_variants ?? {};
+  const held = (key) => typeof variants[key] === 'string' && variants[key].length > 0;
   for (const f of VARIANT_FAMILIES) {
-    check(`bundle carries a ${f.key} variant`,
-      typeof variants[f.key] === 'string' && variants[f.key].length > 0);
-    check(`${f.key} variant differs from the base`,
-      variants[f.key] !== bundled.system_prompt);
     check(`${f.key} matcher accepts its own capture model`,
       f.matches(f.captureModel.toLowerCase()));
+    if (f.within !== undefined) {
+      check(`${f.key}: the family it sits within, ${f.within}, is in the table`,
+        VARIANT_FAMILIES.some((w) => w.key === f.within && w.within === undefined));
+      check(`${f.key}: a variant the bundle holds for it differs from the ${f.within} variant`,
+        !held(f.key) || variants[f.key] !== variants[f.within]);
+      continue;
+    }
+    check(`bundle carries a ${f.key} variant`, held(f.key));
+    check(`${f.key} variant differs from the base`,
+      variants[f.key] !== bundled.system_prompt);
   }
   const known = new Set(VARIANT_FAMILIES.map((f) => f.key));
   const orphans = Object.keys(variants).filter((k) => !known.has(k));

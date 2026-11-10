@@ -2,7 +2,7 @@
 // the CHANGELOG bullet it files (the release note users read) is read back.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, cpSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,8 @@ function runBot(script, args, stage) {
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'src'));
   for (const f of ['_drift-patch-helpers.mjs', 'drift-report.mjs', script]) copyFileSync(join(SCRIPTS, f), join(root, 'scripts', f));
+  // The rebake prep reads the variant families from the build, as it does in the workflow.
+  if (script === 'rebake-release-prep.mjs') cpSync(join(SCRIPTS, '..', 'dist'), join(root, 'dist'), { recursive: true });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@askalf/dario', version: '6.11.3' }, null, 2) + '\n');
   writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ version: '6.11.3', packages: { '': { version: '6.11.3' } } }, null, 2) + '\n');
   writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n## [6.11.3] - 2026-09-20\n\n- older\n');
@@ -96,6 +98,27 @@ header('rebake-release-prep.mjs describes the bake');
   check('the note is not the generic sentence', !bullets.join(' ').includes('current request shape'), bullets.join(' | '));
   check('the PR summary is written beside it', summary.includes('- **Sonnet 5 system prompt:**') && summary.includes('- **`Bash` tool:** its description changed.'), summary);
   check('no em dash and no arrow in either', ![...bullets, summary].some((x) => x.includes('\u2014') || x.includes('\u2192')));
+}
+
+// A family within a wider one. With no variant of its own in the bundle its models get
+// the wider family's prompt, so that is what the note says the new one replaces.
+header('rebake-release-prep.mjs on a variant new to a family within another');
+{
+  const git = (root, ...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: root, encoding: 'utf8' });
+  const { status, stderr, bullets, summary } = runBot('rebake-release-prep.mjs', [], (root) => {
+    const path = join(root, 'src', 'cc-template-data.json');
+    const committed = { ...JSON.parse(readFileSync(path, 'utf8')), system_prompt: 'base', system_prompt_variants: { fable: 'F'.repeat(300) } };
+    writeFileSync(path, JSON.stringify(committed, null, 2) + '\n');
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'base');
+    writeFileSync(path, JSON.stringify({ ...committed, system_prompt_variants: { fable: 'F'.repeat(300), 'fable-5-2': 'G'.repeat(320) } }, null, 2) + '\n');
+  });
+  check('exits 0', status === 0, stderr);
+  check('one bullet', bullets.length === 1, bullets.join(' | '));
+  check('it names the model version', (bullets[0] ?? '').startsWith('- **The bundled template holds a system prompt for Fable 5.2.** It is 320 characters'), bullets[0]);
+  check('it replaces the Fable prompt, not the base', (bullets[0] ?? '').endsWith('carry it in place of the Fable prompt.'), bullets[0]);
+  check('the PR summary names it the same way', summary.includes('- **Fable 5.2 system prompt:** new in the bundle, 320 characters.'), summary);
 }
 
 // A capture that moves only the label and the user-agent. The user-agent is a header
