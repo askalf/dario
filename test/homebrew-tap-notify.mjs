@@ -74,8 +74,25 @@ header('a run that shipped leaves the marker, and only such a run');
   check('a missing file is an error of the upload step, not an empty artifact', (upload ?? '').includes('if-no-files-found: error'));
   check('a failed upload does not fail a release that is already out', (upload ?? '').includes('continue-on-error: true') && !(write ?? '').includes('continue-on-error'));
   check('the upload action is pinned to a commit', /uses: actions\/upload-artifact@[0-9a-f]{40} # v/.test(upload ?? ''));
-  const publish = release.indexOf('npm publish');
-  check('the marker is written after the publish', publish > 0 && publish < release.indexOf('- name: Write the version this run shipped'));
+  // Positions of the steps themselves. The words "npm publish" also appear in the file's opening comment.
+  const PUBLISH = '      - name: npm publish (OIDC trusted publishing)\n';
+  const WRITE = '      - name: Write the version this run shipped\n';
+  const UPLOAD = '      - name: Upload it for the Homebrew notification\n';
+  const markerAfterPublish = (text) => {
+    const at = (s) => (text.split(s).length - 1 === 1 ? text.indexOf(s) : -1);
+    return at(PUBLISH) > 0 && at(WRITE) > at(PUBLISH) && at(UPLOAD) > at(WRITE);
+  };
+  check('the marker is written and uploaded after the npm publish step', markerAfterPublish(release));
+  // The same file with the two marker steps moved ahead of the publish step: the check has to notice.
+  const markerSteps = `${write}\n${upload}`.trimEnd() + '\n';
+  const without = release.replace(`\n${markerSteps}`, '\n');
+  const moved = without.replace(PUBLISH, `${markerSteps}\n${PUBLISH}`);
+  const once = (text, s) => text.split(s).length - 1 === 1;
+  check('the fixture holds the same three steps, each once, with the marker steps first', !without.includes(WRITE) && !without.includes(UPLOAD)
+    && [PUBLISH, WRITE, UPLOAD].every((s) => once(moved, s))
+    && moved.indexOf(WRITE) < moved.indexOf(UPLOAD) && moved.indexOf(UPLOAD) < moved.indexOf(PUBLISH));
+  check('with the marker steps moved ahead of the publish step, the check fails', markerAfterPublish(moved) === false);
+  check('with the publish step renamed, the check fails rather than passing on a comment', markerAfterPublish(release.replace(PUBLISH, '      - name: publish\n')) === false);
 }
 
 header('the notify workflow follows the release workflow');
