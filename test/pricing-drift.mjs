@@ -83,10 +83,19 @@ header('happy path');
   const r = parsePricingTable(DOC);
   check('parsed every model row', Object.keys(r).length === 10, Object.keys(r).join(','));
   check('sonnet 5 rates', JSON.stringify(r['claude-sonnet-5']) ===
-    JSON.stringify({ input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 }));
+    JSON.stringify({ input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5, cacheCreate1h: 4 }));
   check('haiku 4.5 rates (the row dario had wrong)', JSON.stringify(r['claude-haiku-4-5']) ===
-    JSON.stringify({ input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25 }));
+    JSON.stringify({ input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25, cacheCreate1h: 2 }));
   check('cacheCreate reads the 5m column, not the 1h one', r['claude-fable-5'].cacheCreate === 12.5);
+  check('cacheCreate1h reads the 1h column', r['claude-fable-5'].cacheCreate1h === 20 && r['claude-opus-5'].cacheCreate1h === 10);
+  check('a table without the 1h column is a shape change, not a table to read four prices from',
+    throws(() => parsePricingTable(DOC.replace('1h Cache Writes', 'Extended Cache Writes')), /table shape/));
+  const fable = { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5, cacheCreate1h: 20 };
+  check('a matching one-hour write price is not drift', diffPricing({ 'claude-fable-5': fable }, r).length === 0);
+  const off = diffPricing({ 'claude-fable-5': { ...fable, cacheCreate1h: 12.5 } }, r);
+  check('a one-hour write price that differs is drift', off.length === 1 && off[0].field === 'cacheCreate1h' && off[0].ours === 12.5 && off[0].published === 20, JSON.stringify(off));
+  const { cacheCreate1h: _none, ...fourFields } = fable;
+  check('a row of ours with no one-hour price (OpenAI\'s table) is not compared for it', diffPricing({ 'claude-fable-5': fourFields }, r).length === 0);
   check('cacheRead reads Cache Hits & Refreshes', r['claude-fable-5'].cacheRead === 1);
   check('stops at the end of the table', r['some prose after.'] === undefined);
 }
@@ -136,7 +145,7 @@ header('a model priced by prompt length: two rows, one model (Claude Haiku 5.5, 
   check('both rows name the same model id', modelIdFromDisplayName('Claude Haiku 5.5 (for prompts up to 100,000 tokens)') === 'claude-haiku-5-5' && modelIdFromDisplayName('Claude Haiku 5.5 (for prompts over 100,000 tokens)') === 'claude-haiku-5-5');
   const r = parsePricingTable(doc(SHORT, LONG));
   check('the first row is the model\'s rate', r['claude-haiku-5-5'].input === 0.1 && r['claude-haiku-5-5'].output === 0.5 && r['claude-haiku-5-5'].cacheRead === 0.01 && r['claude-haiku-5-5'].cacheCreate === 0.125);
-  check('the second is its longPrompt row, threshold included', JSON.stringify(r['claude-haiku-5-5'].longPrompt) === JSON.stringify({ over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 }));
+  check('the second is its longPrompt row, threshold included', JSON.stringify(r['claude-haiku-5-5'].longPrompt) === JSON.stringify({ over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625, cacheCreate1h: 1 }));
   check('one model, not two: eleven ids', Object.keys(r).length === 11, Object.keys(r).join(','));
   check('the order of the two rows does not matter', JSON.stringify(parsePricingTable(doc(LONG, SHORT))['claude-haiku-5-5']) === JSON.stringify(r['claude-haiku-5-5']));
   check('a model with one row carries no longPrompt', !('longPrompt' in r['claude-haiku-4-5']));
@@ -154,7 +163,7 @@ header('a model priced by prompt length: two rows, one model (Claude Haiku 5.5, 
   // A qualifier the parser does not know stays in the id, where it matches no row of ours and is reported as unpriced.
   check('an unknown qualifier is not read as the model\'s rate', modelIdFromDisplayName('Claude Haiku 5.5 (weekend rate)') !== 'claude-haiku-5-5');
 
-  const ours = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125, longPrompt: { over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 } };
+  const ours = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125, cacheCreate1h: 0.2, longPrompt: { over: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625, cacheCreate1h: 1 } };
   check('a matching long-prompt row is not drift', diffPricing({ 'claude-haiku-5-5': ours }, r).length === 0);
   const moved = diffPricing({ 'claude-haiku-5-5': { ...ours, longPrompt: { ...ours.longPrompt, over: 200000, output: 2 } } }, r);
   check('a moved threshold and a moved long-prompt price are drift', moved.length === 2 && moved.some((d) => d.field === 'longPrompt.over' && d.ours === 200000 && d.published === 100000) && moved.some((d) => d.field === 'longPrompt.output'), JSON.stringify(moved));

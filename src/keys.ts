@@ -157,14 +157,15 @@ export function requestBudgetReservation(
   model: string | readonly string[],
   bodyBytes: number,
   maxTokens: number | null | undefined,
-  priceOf: (model: string, atMs: number, cell: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }) => number,
+  priceOf: (model: string, atMs: number, cell: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; cacheCreate1hTokens?: number }) => number,
   now: number = Date.now(),
   /** Bytes dario adds to the prompt beyond the client's body (the template's system prompt and tools). */
   extraPromptBytes: number = 0,
 ): KeyBudgetReservation {
   const inputTokens = Math.ceil((Math.max(0, bodyBytes) + Math.max(0, extraPromptBytes)) / BUDGET_BYTES_PER_TOKEN);
   const outputTokens = Number.isFinite(maxTokens as number) && (maxTokens as number) > 0 ? Math.ceil(maxTokens as number) : BUDGET_DEFAULT_MAX_TOKENS;
-  const cell = { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens };
+  // The whole prompt as a one-hour cache write: the costliest bucket a prompt token can land in.
+  const cell = { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens, cacheCreate1hTokens: inputTokens };
   const models = typeof model === 'string' ? [model] : model.length > 0 ? model : [''];
   const usd = Math.max(...models.map((m) => priceOf(m, now, cell)));
   return { count: 1, usd: Number.isFinite(usd) ? usd : 0, tokens: inputTokens + outputTokens };

@@ -68,6 +68,7 @@ const COLUMNS = {
   'output tokens': 'output',
   'cache hits and refreshes': 'cacheRead',
   '5m cache writes': 'cacheCreate',
+  '1h cache writes': 'cacheCreate1h',
 };
 
 /** A table header cell, normalised for matching against COLUMNS / OPENAI_COLUMNS. */
@@ -387,7 +388,9 @@ export function diffPricing(ours, published) {
         note: 'not in the published table — renamed upstream, or retired' });
       continue;
     }
-    for (const field of ['input', 'output', 'cacheRead', 'cacheCreate']) {
+    // cacheCreate1h is a column of Anthropic's table alone: OpenAI's rows
+    // carry no such field on either side, and are skipped for it here.
+    for (const field of ['input', 'output', 'cacheRead', 'cacheCreate', 'cacheCreate1h']) {
       if (typeof mine[field] !== 'number') continue;
       if (mine[field] !== theirs[field]) {
         drift.push({ model: id, field, ours: mine[field], published: theirs[field] });
@@ -403,7 +406,7 @@ export function diffPricing(ours, published) {
       drift.push({ model: id, field: 'longPrompt', ours: 'absent', published: `over ${theirs.longPrompt.over} tokens`,
         note: 'the published table prices this model by prompt length: add its longPrompt row' });
     } else if (mine.longPrompt && theirs.longPrompt) {
-      for (const field of ['over', 'input', 'output', 'cacheRead', 'cacheCreate']) {
+      for (const field of ['over', 'input', 'output', 'cacheRead', 'cacheCreate', 'cacheCreate1h']) {
         if (mine.longPrompt[field] !== theirs.longPrompt[field]) {
           drift.push({ model: id, field: `longPrompt.${field}`, ours: mine.longPrompt[field], published: theirs.longPrompt[field] });
         }
@@ -433,11 +436,16 @@ export function unpricedPublishedModels(ours, published, retired = new Set()) {
       note: 'in the published table with no row in PRICING: requests for it are costed at the unknown-model fallback rate' }));
 }
 
-/** The four rate fields, from an entry, an `intro` block or a `longPrompt` row. */
+/**
+ * The rate fields, from an entry, an `intro` block or a `longPrompt` row: the
+ * four every price list has, and the one-hour cache write where the row
+ * carries one (PRICING's rows all do; OPENAI_PRICING has no such price).
+ */
 function rateOf(rate) {
   return {
     input: rate.input, output: rate.output,
     cacheRead: rate.cacheRead, cacheCreate: rate.cacheCreate,
+    ...(typeof rate.cacheCreate1h === 'number' ? { cacheCreate1h: rate.cacheCreate1h } : {}),
   };
 }
 
