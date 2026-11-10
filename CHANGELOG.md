@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`dario doctor --usage` and `--obedience` probe the current model of each family.** They sent their requests to Haiku 4.5, Sonnet 5, Opus 5.5 and Fable 5. The `haiku`, `sonnet` and `fable` shorthands route to Haiku 5.5, Sonnet 5.5 and Fable 5.2, so three of the four rows reported on a model most requests no longer use. Each probe now goes to the newest model of its family in the bundled model list, and follows that list when a model is added. A family named in `DARIO_SUSPENDED_MODELS` is not probed. The row labels (`Obedience (haiku)` and so on) are unchanged.
+
 - **`dario doctor` warns when the template holds no Haiku 5.5 system prompt.** Haiku 5.5 was added to the "Prompt variants" row as a model that might share the base prompt, so a template without one read as fine. Its first capture showed a prompt of its own, which 6.23.8 bundles. A template that lacks it now warns, as it does for Fable, Opus 5 and Sonnet 5, and a template rebake whose Haiku 5.5 capture fails with nothing to keep stops instead of shipping the base prompt for that model. Requests are built the same as before.
 
 ## [6.23.8] - 2026-11-10

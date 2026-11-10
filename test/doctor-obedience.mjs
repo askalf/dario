@@ -15,7 +15,9 @@ import {
   isObedientReply,
   extractMessageText,
   OBEDIENCE_SYSTEM_PROMPT,
+  probeFamilies,
 } from '../dist/doctor.js';
+import { BAKED_BASE_MODELS, resolveAliasAgainst } from '../dist/model-catalog.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -84,6 +86,45 @@ check('prompt names PONG exactly once',
 check('prompt demands exclusivity', /ONLY/.test(OBEDIENCE_SYSTEM_PROMPT));
 check('an obedient reply to the prompt passes the judge',
   isObedientReply('PONG'));
+
+// The --usage and --obedience probes send to one model per family. The list
+// was written out by hand and went stale: it probed Haiku 4.5, Sonnet 5 and
+// Fable 5 while the family shorthands routed to Haiku 5.5, Sonnet 5.5 and
+// Fable 5.2. It is now the newest model of each family in the bundled list.
+header('6. probe models — the newest of each family in the bundled list');
+{
+  const bundled = probeFamilies(BAKED_BASE_MODELS);
+  const modelOf = (list, family) => list.find((f) => f.family === family)?.model;
+  check('the four families, in the order the rows print', bundled.map((f) => f.family).join(',') === 'haiku,sonnet,opus,fable', bundled.map((f) => f.family).join(','));
+  for (const { family, model } of bundled) {
+    check(`${family}: probes what the \`${family}\` shorthand routes to (${model})`, model === resolveAliasAgainst(family, BAKED_BASE_MODELS));
+    check(`${family}: a base model, no context tag`, BAKED_BASE_MODELS.includes(model) && !model.includes('['));
+  }
+  check('with the list as bundled today: Haiku 5.5, Sonnet 5.5, Opus 5.5, Fable 5.2',
+    modelOf(bundled, 'haiku') === 'claude-haiku-5-5' && modelOf(bundled, 'sonnet') === 'claude-sonnet-5-5'
+    && modelOf(bundled, 'opus') === 'claude-opus-5-5' && modelOf(bundled, 'fable') === 'claude-fable-5-2',
+    JSON.stringify(bundled));
+
+  const next = probeFamilies(['claude-haiku-5-5', 'claude-haiku-6', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-fable-5-10']);
+  check('a newer model added to the list is probed with no edit here', modelOf(next, 'haiku') === 'claude-haiku-6');
+  check('versions compare as numbers: 5.10 is newer than 5.2', modelOf(next, 'fable') === 'claude-fable-5-10');
+  check('a [1m] id is never the probe model', modelOf(probeFamilies(['claude-opus-5-5', 'claude-opus-6[1m]']), 'opus') === 'claude-opus-5-5');
+
+  const partial = probeFamilies(['claude-sonnet-5-5', 'claude-opus-5-5']);
+  check('a family the list holds no model for is left out', partial.map((f) => f.family).join(',') === 'sonnet,opus', JSON.stringify(partial));
+  check('an empty list probes nothing', probeFamilies([]).length === 0);
+
+  // With no list given, suspended families are dropped (DARIO_SUSPENDED_MODELS).
+  const saved = process.env.DARIO_SUSPENDED_MODELS;
+  try {
+    process.env.DARIO_SUSPENDED_MODELS = 'fable';
+    check('a suspended family is not probed', probeFamilies().map((f) => f.family).join(',') === 'haiku,sonnet,opus', JSON.stringify(probeFamilies()));
+    process.env.DARIO_SUSPENDED_MODELS = '';
+    check('with none suspended, all four are', probeFamilies().length === 4);
+  } finally {
+    if (saved === undefined) delete process.env.DARIO_SUSPENDED_MODELS; else process.env.DARIO_SUSPENDED_MODELS = saved;
+  }
+}
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
