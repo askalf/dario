@@ -3709,7 +3709,7 @@ Two pin updates and a fresh template re-bake. Same CC v2.1.143 binary on disk as
 **Default pins (out of sync with current CC):**
 
 - `DEFAULT_MAX_TOKENS` bumped **32000 → 64000** (`src/cc-template.ts:944`). Tracks CC's current wire default. Evolution: 32000 (v2.1.116) → 64000 (v2.1.143). Hardcoded value was last updated against v2.1.116; CC moved without a corresponding npm-release-note.
-- `resolveEffort` default bumped **`'high'` → `'xhigh'`** (`src/cc-template.ts:981`). Tracks CC's evolving `output_config.effort` wire value. Evolution: `'medium'` (v2.1.116, Apr 2026 — documented in [Discussion #13](https://github.com/askalf/dario/discussions/13)) → `'high'` (mid-May) → `'xhigh'` (v2.1.143, May 17). Same binary, three different values within six weeks.
+- `resolveEffort` default bumped **`'high'` → `'xhigh'`** (`src/cc-template.ts:981`). Tracks CC's evolving `output_config.effort` wire value. Evolution: `'medium'` (v2.1.116, Apr 2026) → `'high'` (mid-May) → `'xhigh'` (v2.1.143, May 17). Same binary, three different values within six weeks.
 
 **Template re-bake — same binary, different output:**
 
@@ -3723,8 +3723,6 @@ Re-baked `src/cc-template-data.json` from a fresh live capture. Diff vs. yesterd
 | `body_field_order`, `header_order`, `agent_identity` | unchanged | unchanged | structural shape held |
 
 **The receipt-log significance.** Until today, dario's drift-watch story was "Anthropic ships silent wire-shape changes between CC npm releases." This release is the first concrete evidence that they also ship them **within the same npm release**, via remote configuration that flips behavior without bumping any version anywhere. The same `claude.exe` on disk that produced template A yesterday produces template B today. Five distinct wire-shape diffs in 24 hours, zero changelog entries from Anthropic, all caught by `scripts/capture-full-body.mjs` + the bake script.
-
-[Discussion #13](https://github.com/askalf/dario/discussions/13) was updated this morning with the medium → high → xhigh evolution receipts in a reply to a user question.
 
 ### Tests
 
@@ -3746,7 +3744,7 @@ Shim mode is deprecated. It still works; it now emits a loud banner on every inv
 
 **Why now.** A side-by-side fingerprint diff of `src/shim/runtime.cjs:_rewriteBody` against the proxy's `buildCCRequest` (run against a representative `claude -p` body) confirmed shim only normalizes a subset of the wire-shape axes Anthropic's billing classifier inspects:
 
-| Discussion #13 axis | Proxy | Shim |
+| Axis | Proxy | Shim |
 |---|---|---|
 | System block count (3) | ✅ rebuilt | ✅ replaces system[1] and system[2] |
 | Agent identity / system prompt | ✅ rebuilt | ✅ replaced |
@@ -4525,7 +4523,7 @@ Documentation: [`docs/system-prompt.md`](docs/system-prompt.md) for the user-fac
 
 ## [3.33.0] - 2026-04-30
 
-One new feature (`hands` client detection — unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research published in [Discussion #172](https://github.com/askalf/dario/discussions/172).
+One new feature (`hands` client detection, which unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research written up in [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md).
 
 PRs in this release: #170 (auto-release scheduled fallback), #171 (maintainer diagnostics), #173 (idempotency gate fix), #174 (hands identity detection), #175 (credential freshness fallthrough).
 
@@ -4557,13 +4555,13 @@ End-to-end verification of the bot-auto-merge → schedule-trigger → release p
 
 ### Added — maintainer diagnostics: `scripts/capture-full-body.mjs`, `scripts/test-system-prompt-mods.mjs`, `scripts/test-constraint-removal.mjs` (#171)
 
-Three paired diagnostic scripts under `scripts/` that don't ship with the package and aren't invoked from CI. Used during the classifier research published in [Discussion #172](https://github.com/askalf/dario/discussions/172):
+Three paired diagnostic scripts under `scripts/` that don't ship with the package and aren't invoked from CI. Used during the classifier research written up in [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md):
 
 - **`capture-full-body.mjs`** — captures the literal **values** CC wires on `/v1/messages` (effort, max_tokens, thinking config, model, etc.) — fields the existing `capture-and-bake.mjs` strips during `scrubTemplate`. Verifies CC's actual wire values against Anthropic's stated defaults in ~10s.
-- **`test-system-prompt-mods.mjs`** — A/B billing-classifier probe against system prompt mutations. 7-variant ladder showed all variants — including replacing CC's 27k-char system prompt with a 321-char custom one and adding a 4th block — route to `five_hour`. **System prompt content, length, and block count are not classifier inputs** (revises one of [Discussion #13](https://github.com/askalf/dario/discussions/13)'s 8-signal claims).
+- **`test-system-prompt-mods.mjs`**: A/B billing-classifier probe against system prompt mutations. 7-variant ladder showed all variants (including replacing CC's 27k-char system prompt with a 321-char custom one and adding a 4th block) route to `five_hour`. **System prompt content, length, and block count are not classifier inputs**.
 - **`test-constraint-removal.mjs`** — A/B model behavior delta when CC's behavioral constraints are stripped. Confirmed removing prompt-level alignment reminders contributes <3% over partial strip (RLHF is doing the alignment work, not the prompt).
 
-Each script reads OAuth directly from `~/.claude/.credentials.json` — robust against stale `~/.dario/` state. Each `test-*` invocation dispatches real upstream requests (7 / 9 respectively) on the maintainer's Max plan; cost is negligible but worth knowing before running. Discussion #172 is the public writeup with reproduction instructions.
+Each script reads OAuth directly from `~/.claude/.credentials.json`, robust against stale `~/.dario/` state. Each `test-*` invocation dispatches real upstream requests (7 / 9 respectively) on the maintainer's Max plan; cost is negligible but worth knowing before running. [system-prompt-classifier-study.md](docs/research/system-prompt-classifier-study.md) is the public writeup.
 
 ## [3.32.2] - 2026-04-29
 
