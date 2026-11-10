@@ -64,9 +64,13 @@ try {
 } catch {
   committedText = null;
 }
+// The workflow builds before it bakes, so dist/ is there to name the families
+// that sit within a wider one.
+const { VARIANT_FAMILIES } = await import('../dist/live-fingerprint.js');
+const within = Object.fromEntries(VARIANT_FAMILIES.filter((f) => f.within).map((f) => [f.key, f.within]));
 const change = committedText === null
   ? null
-  : describeBundleChange(JSON.parse(committedText), JSON.parse(readFileSync(join(repoRoot, BUNDLE), 'utf-8')));
+  : describeBundleChange(JSON.parse(committedText), JSON.parse(readFileSync(join(repoRoot, BUNDLE), 'utf-8')), within);
 const bullet = change
   ? formatRebakeChangelog(change).join('\n')
   : '- **The bundled template follows Claude Code\'s current request shape.** A live capture ' +

@@ -35,11 +35,13 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
 {
   check('gpt-* is the openai provider; claude-* and unknown ids are anthropic',
     providerOfModel('gpt-5.6-terra') === 'openai' && providerOfModel('claude-opus-5') === 'anthropic' && providerOfModel('mystery') === 'anthropic' && providerOfModel('o3') === 'openai');
+  // OpenAI's table has one cache-write price; a rate read from it carries that price for a one-hour write too.
+  const openAiRate = (id) => ({ ...OPENAI_PRICING[id], cacheCreate1h: OPENAI_PRICING[id].cacheCreate });
   const terra = pricingRateFor('gpt-5.6-terra', T);
   check('gpt-5.6-terra is priced from the OpenAI table, not the sonnet fallback', terra.input === 2 && terra.output === 12 && terra.cacheRead === 0.2, JSON.stringify(terra));
-  check('an effort suffix is stripped before lookup', JSON.stringify(pricingRateFor('gpt-5.6-sol:high', T)) === JSON.stringify(OPENAI_PRICING['gpt-5.6-sol']));
+  check('an effort suffix is stripped before lookup', JSON.stringify(pricingRateFor('gpt-5.6-sol:high', T)) === JSON.stringify(openAiRate('gpt-5.6-sol')));
   check('unknown gpt model → gpt-5.6-terra rate; unknown claude → sonnet-4-6 rate',
-    JSON.stringify(pricingRateFor('gpt-9-nova', T)) === JSON.stringify(OPENAI_PRICING['gpt-5.6-terra'])
+    JSON.stringify(pricingRateFor('gpt-9-nova', T)) === JSON.stringify(openAiRate('gpt-5.6-terra'))
     && pricingRateFor('claude-mystery-9', T).input === PRICING['claude-sonnet-4-6'].input);
   check('[1m] tag still stripped on the Claude side', pricingRateFor('claude-sonnet-5[1m]', T).input === 2);
   check('the dated id a response echoes prices as its family (live 2026-09-12: claude-haiku-4-5-20251001 was at the sonnet fallback)', pricingRateFor('claude-haiku-4-5-20251001', T).input === 1 && pricingRateFor('claude-haiku-4-5-20251001', T).output === 5);

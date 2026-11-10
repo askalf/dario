@@ -13,10 +13,10 @@
  * the caller's DARIO_* and ANTHROPIC_* variables and ~/.dario/config.json take
  * no part in how a request is built. It sends one small request for the base
  * model and for each prompt-variant family's capture model, except the
- * families in UNPROBED_FAMILIES (Fable: see there). Each request
- * declares the bundle's tools by name, so the rebuilt request carries the
- * bundled tool definitions; a request with no tools carries none for most
- * models.
+ * families in UNPROBED_FAMILIES and the ones within them (Fable: see there).
+ * Each request declares the bundle's tools by name, so the rebuilt request
+ * carries the bundled tool definitions; a request with no tools carries none
+ * for most models.
  *
  * What went upstream is read, not assumed. The proxy records the model, system
  * blocks and tools of every request it sends, and a run in which one of them
@@ -51,7 +51,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { carriedBundleTools, errorDetail, formatUpstreamCheck, missingFromSent, probeBody, probeModels, probeTools, summarizeProbes } from './_rebake-upstream.mjs';
+import { carriedBundleTools, errorDetail, formatUpstreamCheck, missingFromSent, probeBody, probeModels, probePrompt, probeTools, summarizeProbes } from './_rebake-upstream.mjs';
 import { startTracked } from './_tracked-process.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,7 +97,7 @@ const bundle = JSON.parse(srcBundle);
 // request builder sends it: without the paste-only sentence of its
 // <pasted_content> rule.
 const PROBES = probeModels(TEMPLATE_BASE_MODEL, VARIANT_FAMILIES)
-  .map(({ model, key }) => ({ model, prompt: key === null ? bundle.system_prompt : (bundle.system_prompt_variants?.[key] ?? bundle.system_prompt) }))
+  .map((probe) => ({ model: probe.model, prompt: probePrompt(bundle, probe) }))
   .map((probe) => ({ ...probe, prompt: typeof probe.prompt === 'string' ? withoutPasteOnlyExemption(probe.prompt) : probe.prompt }));
 let tools = { carried: 0, total: (bundle.tools ?? []).length, left: [] };
 const finish = (outcome, results = [], detail = '') => {

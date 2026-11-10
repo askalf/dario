@@ -19,7 +19,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { variantShapeHash, classifyVariantShape } from '../dist/live-fingerprint.js';
+import { variantShapeHash, classifyVariantShape, decideVariant } from '../dist/live-fingerprint.js';
 
 let pass = 0, fail = 0;
 const check = (name, cond) => { if (cond) { console.log(`  OK ${name}`); pass++; } else { console.log(`  FAIL ${name}`); fail++; } };
@@ -67,11 +67,45 @@ header('the shipped bundle carries a consistent shape memory');
   check('opus-5 remembers both measured arms', (mem['opus-5'] || []).length >= 2);
 }
 
+header('decideVariant: what the bake stores for one family');
+{
+  const base = 'the shared base prompt';
+  const armA = 'arm A, the variant the bundle holds';
+  const armB = 'arm B, the other A/B arm, seen before';
+  const armC = 'arm C, a shape never served until now';
+  const h = variantShapeHash;
+  const decide = (a) => decideVariant({ inherited: base, ...a });
+  const same = (got, want) => JSON.stringify(got) === JSON.stringify(want);
+  check('a capture equal to the base stores nothing', same(decide({ captured: base, previous: armA }), { outcome: 'inherited' }));
+  check('a first capture is stored', same(decide({ captured: armA }), { outcome: 'fresh', store: armA }));
+  check('the held variant captured again stays', same(decide({ captured: armA, previous: armA, knownHashes: [h(armA)] }), { outcome: 'fresh', store: armA }));
+  check('a known arm keeps the held variant (sticky)', same(decide({ captured: armB, previous: armA, knownHashes: [h(armA), h(armB)] }), { outcome: 'known-alt', store: armA }));
+  check('a never-seen shape replaces it', same(decide({ captured: armC, previous: armA, knownHashes: [h(armA), h(armB)] }), { outcome: 'fresh', store: armC }));
+  check('a known arm with no variant held is stored', same(decide({ captured: armB, knownHashes: [h(armB)] }), { outcome: 'fresh', store: armB }));
+
+  // A family within another: `inherited` is the wider family's variant, and
+  // the wider family's known shapes are given.
+  const wider = 'the wider family variant';
+  const widerAlt = 'another arm of the wider family';
+  const sub = (a) => decideVariant({ inherited: wider, widerHashes: [h(wider), h(widerAlt)], ...a });
+  check('within: a capture equal to the wider variant stores nothing', same(sub({ captured: wider }), { outcome: 'inherited' }));
+  check('within: another known arm of the wider family stores nothing', same(sub({ captured: widerAlt }), { outcome: 'inherited' }));
+  check('within: a shape of its own is stored', same(sub({ captured: armA }), { outcome: 'fresh', store: armA }));
+  check('within: a capture equal to the base is stored, the wider variant is not what its models get', same(sub({ captured: base }), { outcome: 'fresh', store: base }));
+  check('within: holding its own, another arm of the wider family gives it up', same(sub({ captured: widerAlt, previous: armA, knownHashes: [h(armA)] }), { outcome: 'inherited' }));
+  check('within: holding its own, a wider arm also in its own memory gives it up', same(sub({ captured: widerAlt, previous: armA, knownHashes: [h(armA), h(widerAlt)] }), { outcome: 'inherited' }));
+  check('within: holding its own, an arm known only to it keeps the held one', same(sub({ captured: armB, previous: armA, knownHashes: [h(armA), h(armB)] }), { outcome: 'known-alt', store: armA }));
+  check('within: holding its own, the wider variant itself gives it up', same(sub({ captured: wider, previous: armA, knownHashes: [h(armA)] }), { outcome: 'inherited' }));
+  check('within: a shape of its own that returns after being retired is stored again', same(sub({ captured: armA, knownHashes: [h(armA)] }), { outcome: 'fresh', store: armA }));
+  check('within: with none held, a wider arm in its own memory stores nothing', same(sub({ captured: widerAlt, knownHashes: [h(widerAlt)] }), { outcome: 'inherited' }));
+  check('within: holding its own, a never-seen shape replaces it', same(sub({ captured: armC, previous: armA, knownHashes: [h(armA)] }), { outcome: 'fresh', store: armC }));
+}
+
 header('the bake script wires the classifier, not a strict !==');
 {
   const bake = readFileSync(new URL('../scripts/capture-and-bake.mjs', import.meta.url), 'utf8');
-  check('bake loop classifies the captured arm', /classifyVariantShape\(vScrubbed\.system_prompt, prevVariants\[key\]/.test(bake));
-  check('a known-alt keeps the previous canonical (sticky)', /variants\[key\] = prevVariants\[key\];\s*\n\s*variantOutcomes\[key\] = 'known-alt';/.test(bake));
+  check('bake loop decides on the captured arm with the shape memory', /decideVariant\(\{\s*captured: vScrubbed\.system_prompt,[\s\S]{0,200}knownHashes: prevMemory\[key\]/.test(bake));
+  check('the bake stores what was decided', /variants\[key\] = decision\.store;/.test(bake));
   check('the outgoing bundle carries the unioned memory', /scrubbed\._variantShapeHashes = memory;/.test(bake));
   check('check mode logs known arms as not-drift', /known A\/B arm[\s\S]{0,200}not drift/.test(bake));
 }

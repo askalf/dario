@@ -9,7 +9,7 @@
  */
 
 import {
-  loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES,
+  loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES, variantFor,
   PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS,
 } from './live-fingerprint.js';
 import { VALID_EFFORT_VALUES, parseEffortSuffix, type EffortValue } from './effort.js';
@@ -231,14 +231,15 @@ export const CC_SYSTEM_PROMPT_SONNET5: string = _variants['sonnet-5'] ?? CC_SYST
  *
  * Selection iterates VARIANT_FAMILIES (live-fingerprint.ts) — the same table
  * the bake captures from — so the two sides cannot drift apart. A family
- * whose variant is absent from the loaded template falls back to the base;
- * `dario doctor`'s "Prompt variants" row surfaces that state instead of
- * letting it pass silently.
+ * within another (fable-5-2 within fable) gets the wider family's variant
+ * when the template holds none for it. A family with neither falls back to
+ * the base; `dario doctor`'s "Prompt variants" row surfaces that state
+ * instead of letting it pass silently.
  */
 export function systemPromptForModel(model?: string): string {
   const m = (model ?? '').toLowerCase();
   for (const f of VARIANT_FAMILIES) {
-    if (f.matches(m)) return _variants[f.key] ?? CC_SYSTEM_PROMPT;
+    if (f.matches(m)) return variantFor(_variants, f) ?? CC_SYSTEM_PROMPT;
   }
   return CC_SYSTEM_PROMPT;
 }
