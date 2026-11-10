@@ -92,9 +92,12 @@ header('decideVariant: what the bake stores for one family');
   check('within: another known arm of the wider family stores nothing', same(sub({ captured: widerAlt }), { outcome: 'inherited' }));
   check('within: a shape of its own is stored', same(sub({ captured: armA }), { outcome: 'fresh', store: armA }));
   check('within: a capture equal to the base is stored, the wider variant is not what its models get', same(sub({ captured: base }), { outcome: 'fresh', store: base }));
-  check('within: holding its own, a wider arm keeps it', same(sub({ captured: widerAlt, previous: armA, knownHashes: [h(armA)] }), { outcome: 'known-alt', store: armA }));
+  check('within: holding its own, another arm of the wider family gives it up', same(sub({ captured: widerAlt, previous: armA, knownHashes: [h(armA)] }), { outcome: 'inherited' }));
+  check('within: holding its own, a wider arm also in its own memory gives it up', same(sub({ captured: widerAlt, previous: armA, knownHashes: [h(armA), h(widerAlt)] }), { outcome: 'inherited' }));
+  check('within: holding its own, an arm known only to it keeps the held one', same(sub({ captured: armB, previous: armA, knownHashes: [h(armA), h(armB)] }), { outcome: 'known-alt', store: armA }));
   check('within: holding its own, the wider variant itself gives it up', same(sub({ captured: wider, previous: armA, knownHashes: [h(armA)] }), { outcome: 'inherited' }));
-  check('within: a shape it gave up is not stored again', same(sub({ captured: armA, knownHashes: [h(armA)] }), { outcome: 'inherited' }));
+  check('within: a shape of its own that returns after being retired is stored again', same(sub({ captured: armA, knownHashes: [h(armA)] }), { outcome: 'fresh', store: armA }));
+  check('within: with none held, a wider arm in its own memory stores nothing', same(sub({ captured: widerAlt, knownHashes: [h(widerAlt)] }), { outcome: 'inherited' }));
   check('within: holding its own, a never-seen shape replaces it', same(sub({ captured: armC, previous: armA, knownHashes: [h(armA)] }), { outcome: 'fresh', store: armC }));
 }
 

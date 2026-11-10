@@ -326,11 +326,11 @@ export function classifyVariantShape(
  * shape known for the wider family (its memory, the variant the bundle holds
  * and the one this bake captured). A/B arms are served per request, so a
  * family that shares the wider family's prompt can capture another of its
- * arms; such a capture is the wider family's prompt, not a variant.
- *
- * With no variant held, a shape in the family's own memory is one it gave up
- * when a capture matched the wider family, and reads the same way. Storing it
- * again would move the bundle back and forth between two known arms.
+ * arms; such a capture is the wider family's prompt, not a variant, and it
+ * retires a variant the family holds, so its models fall back to the wider
+ * family's. 'known-alt' is reserved for a shape in the family's own memory
+ * (`knownHashes`). With no variant held, a shape known only to the family
+ * itself is its own prompt and is stored again.
  */
 export function decideVariant(a: {
   captured: string;
@@ -343,11 +343,9 @@ export function decideVariant(a: {
   const hash = variantShapeHash(a.captured);
   const own = a.knownHashes ?? [];
   const sharedWithWider = a.widerHashes !== undefined && a.widerHashes.includes(hash);
-  if (a.previous === undefined || a.previous === '') {
-    if (sharedWithWider || (a.widerHashes !== undefined && own.includes(hash))) return { outcome: 'inherited' };
-    return { outcome: 'fresh', store: a.captured };
-  }
-  if (a.captured !== a.previous && (own.includes(hash) || sharedWithWider)) {
+  if (sharedWithWider) return { outcome: 'inherited' };
+  if (a.previous === undefined || a.previous === '') return { outcome: 'fresh', store: a.captured };
+  if (a.captured !== a.previous && own.includes(hash)) {
     return { outcome: 'known-alt', store: a.previous };
   }
   return { outcome: 'fresh', store: a.captured };
