@@ -128,8 +128,9 @@ jobs:
           if [ "$fetch_models" -eq 0 ] && [ "$models" -eq 0 ]; then snapshot_match=1; fi
           # The same list as the newest released Codex CLI, when that is newer than the version dario names.
           # A model listed there and not in the list above is one CODEX_CLIENT_VERSION hides (stale). Nothing
-          # hidden, or no newer release, is current. A release that cannot be read or a second fetch that
-          # fails gives neither: no verdict on the version this run, and none on the two probes above.
+          # hidden, or no newer release, is current. A release that cannot be read, two versions that cannot
+          # be compared (newer-release exits 1 for both) or a second fetch that fails gives neither: no
+          # verdict on the version this run, and none on the two probes above.
           version_stale=0; version_current=0; latest_version=''
           if [ "$fetch_models" -eq 0 ]; then
             if latest_version=$(node scripts/codex-models-probe.mjs newer-release "$client_version" 2>release.err); then
@@ -151,7 +152,7 @@ jobs:
                 cat latest-models.err
               fi
             else
-              echo "::warning::the latest @openai/codex release could not be read; no verdict on the client version this run"
+              echo "::warning::the latest @openai/codex release could not be read or compared with $client_version; no verdict on the client version this run"
               cat release.err
               latest_version=''
             fi

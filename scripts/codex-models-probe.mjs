@@ -22,7 +22,9 @@
  *       with `models <status>` on stderr, which the workflow reads for a 429.
  *   newer-release <client_version>
  *       Prints the latest released @openai/codex version when it is newer
- *       than <client_version>, and nothing when it is not.
+ *       than <client_version>, and nothing when it is the same or older.
+ *       Exits 1 when the two cannot be compared or the registry does not
+ *       answer: no output and exit 0 means "current", and must be earned.
  *   hidden <ours.json> <latest.json>
  *       Prints, one per line, the slugs <latest.json> lists that <ours.json>
  *       does not.
@@ -97,13 +99,20 @@ export function compareReleases(a, b) {
 }
 
 /**
- * The `latest` dist-tag when it is a plain release newer than `current`, else
- * null. A `current` that is not x.y.z (an override naming something else)
- * cannot be compared, and gives null.
+ * The `latest` dist-tag when it is newer than `current`, and null when it is
+ * the same or older. Both answers are a comparison that was made. When either
+ * side is not a plain x.y.z (no `latest` tag, a prerelease under it, an
+ * override that makes dario name something else) there is nothing to compare,
+ * and this throws: "not newer" would read as "current" to the workflow, which
+ * closes an open bump PR on that verdict.
  */
 export function newerRelease(distTags, current) {
   const latest = distTags?.latest;
-  return compareReleases(current, latest) === -1 ? latest : null;
+  const order = compareReleases(current, latest);
+  if (order === null) {
+    throw new Error(`cannot compare the client version ${JSON.stringify(current ?? null)} with the latest @openai/codex release ${JSON.stringify(latest ?? null)}: each must be x.y.z`);
+  }
+  return order === -1 ? latest : null;
 }
 
 /** The slugs a list shows in a picker: visibility `list`, which is what dario routes. */
@@ -219,6 +228,8 @@ async function main(argv) {
     return;
   }
   if (command === 'newer-release' && args.length === 1) {
+    // A version that cannot be compared is refused before the registry is asked.
+    if (!RELEASE.test(args[0])) newerRelease({ latest: undefined }, args[0]);
     const res = await fetch(DIST_TAGS_URL, { headers: { Accept: 'application/json' } });
     if (!res.ok) throw new Error('dist-tags ' + res.status);
     const newer = newerRelease(await res.json(), args[0]);

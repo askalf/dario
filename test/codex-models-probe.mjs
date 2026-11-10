@@ -57,10 +57,14 @@ header('which release is newer');
   check('anything but x.y.z cannot be compared', compareReleases('0.169.0-alpha.7', '0.167.0') === null && compareReleases('0.167', '0.167.0') === null && compareReleases(undefined, '0.167.0') === null);
   check('a newer latest is named', newerRelease({ latest: '0.170.0', alpha: '0.171.0-alpha.1' }, '0.167.0') === '0.170.0');
   check('the same or an older latest is not', newerRelease({ latest: '0.167.0' }, '0.167.0') === null && newerRelease({ latest: '0.160.0' }, '0.167.0') === null);
-  check('a prerelease under latest is not a release', newerRelease({ latest: '0.170.0-alpha.2' }, '0.167.0') === null);
-  check('an alpha tag is never read', newerRelease({ alpha: '0.171.0-alpha.1' }, '0.167.0') === null);
-  check('a version dario was told to name that is not x.y.z gives no verdict', newerRelease({ latest: '0.170.0' }, 'nightly') === null);
-  check('no tags, no verdict', newerRelease(null, '0.167.0') === null && newerRelease({}, '0.167.0') === null);
+  // "Not newer" is a verdict the workflow acts on: it closes an open bump PR. So a comparison that
+  // could not be made is never null. It throws, the command exits 1, and the workflow has no verdict.
+  const noVerdict = (tags, current) => throws(() => newerRelease(tags, current), /cannot compare/);
+  check('a prerelease under latest cannot be compared', noVerdict({ latest: '0.170.0-alpha.2' }, '0.167.0'));
+  check('an alpha tag is never read: with no latest there is nothing to compare', noVerdict({ alpha: '0.171.0-alpha.1' }, '0.167.0'));
+  check('a version dario was told to name that is not x.y.z cannot be compared', noVerdict({ latest: '0.170.0' }, 'nightly') && noVerdict({ latest: '0.170.0' }, undefined));
+  check('an answer with no tags cannot be compared', noVerdict(null, '0.167.0') && noVerdict({}, '0.167.0') && noVerdict({ latest: 7 }, '0.167.0'));
+  check('the refusal names both sides', throws(() => newerRelease({}, 'nightly'), /"nightly".*null.*x\.y\.z/));
 }
 
 const OURS = [
@@ -174,6 +178,9 @@ header('the command line');
   check('and nothing when nothing is hidden', none.status === 0 && none.stdout === '');
   const usage = run(['frobnicate'], dir);
   check('an unknown command exits 1 with the usage', usage.status === 1 && usage.stderr.includes('usage: codex-models-probe.mjs') && !existsSync(join(dir, 'frobnicate')));
+  // The workflow reads exit 0 with no output as "current" and closes an open bump PR on it.
+  const incomparable = run(['newer-release', 'nightly'], dir);
+  check('newer-release with a version it cannot compare exits 1 and prints no version', incomparable.status === 1 && incomparable.stdout === '' && incomparable.stderr.includes('cannot compare'), incomparable.stderr.slice(0, 200));
   const short = run(['list', '0.167.0'], dir);
   check('a command short of an argument exits 1', short.status === 1 && short.stderr.includes('usage:'));
 }
