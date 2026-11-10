@@ -1,5 +1,10 @@
 name: CC template drift watch (self-hosted)
 
+# A run dispatched for a Claude Code version says so in its name. That name is
+# how cc-drift-watch.yml finds the run it dispatched (runTitleFor in
+# scripts/range-bump-carrier.mjs writes the same words).
+run-name: ${{ inputs.cc_version && format('CC template drift watch for Claude Code {0}', inputs.cc_version) || 'CC template drift watch (self-hosted)' }}
+
 # Watches for "same-binary remote-config drift" — the class of CC wire-shape
 # change documented in v4.2.1's CHANGELOG entry. Runs `capture-and-bake.mjs
 # --check` against a live CC install on a self-hosted runner; on detection,
@@ -53,6 +58,16 @@ on:
   schedule:
     - cron: '41 * * * *'
   workflow_dispatch:
+    inputs:
+      cc_version:
+        # cc-drift-watch.yml passes the version npm just published, before it
+        # drafts a maxTested bump. The run brings the runner up to it, so a
+        # rebake that version needs is found now and carries the bump, in
+        # place of a second release half an hour after the first.
+        description: Claude Code version to bring the runner up to first (x.y.z, npm latest)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -86,6 +101,68 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+
+      - name: Pin this run to the dispatched Claude Code version
+        # A run dispatched for a Claude Code version has to look at that
+        # version. The runner otherwise reaches it only after the maxTested bump
+        # has merged (compat-test-self-hosted.yml installs the claimed version)
+        # or at the host's daily update.
+        #
+        # The runner holds more than one install: the system /usr/bin/claude,
+        # and a copy under the tool-cache Node that actions/setup-node puts
+        # first on PATH, which is where `npm i -g` lands. They can be versions
+        # apart (wire-drift-self-hosted.yml has the history). So this step does
+        # not rely on PATH: it finds the binary that reports exactly the
+        # dispatched version, installing it when none does, and names it in
+        # DARIO_CLAUDE_BIN for the rest of the job. The check, the bake and the
+        # wire-drift check below then all measure that one binary. The system
+        # install is never touched.
+        #
+        # Only a bare x.y.z that npm serves as latest is installed, so a
+        # dispatch cannot move this credentialed runner to anything else, and
+        # an install that is already past it is left alone. Never fatal: with
+        # no binary pinned the run measures what is installed, the rebake
+        # carries no bump unless both checks measured one version, and
+        # cc-drift-watch.yml drafts its own PR as before.
+        if: inputs.cc_version != ''
+        env:
+          # UNTRUSTED (a dispatch input): read through this variable only.
+          WANTED: ${{ inputs.cc_version }}
+        run: |
+          set -uo pipefail
+          if [[ ! "$WANTED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::the dispatched version is not a bare x.y.z, so the run is not pinned"
+            exit 0
+          fi
+          latest="$(npm view @anthropic-ai/claude-code dist-tags.latest 2>/dev/null || true)"
+          if [ "$WANTED" != "$latest" ]; then
+            echo "::notice::dispatched for $WANTED but npm latest is ${latest:-<unreadable>}, so the run is not pinned"
+            exit 0
+          fi
+          prefix_bin="$(npm prefix -g 2>/dev/null || true)/bin/claude"
+          pick() {
+            node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$prefix_bin" /usr/bin/claude "$(command -v claude 2>/dev/null || true)" 2>/dev/null || true
+          }
+          bin="$(pick)"
+          if [ -z "$bin" ]; then
+            have="$("$prefix_bin" --version 2>/dev/null | awk '{print $1}' || true)"
+            if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$WANTED" "$have" | sort -V | tail -1)" != "$WANTED" ]; then
+              echo "::notice::the install at $prefix_bin reports $have, past $WANTED, so nothing is installed and the run is not pinned"
+              exit 0
+            fi
+            echo "no installed Claude Code reports $WANTED (this prefix has ${have:-none}); installing it"
+            if ! npm i -g "@anthropic-ai/claude-code@${WANTED}" >/dev/null 2>&1; then
+              echo "::warning::npm could not install @anthropic-ai/claude-code@${WANTED}; the run is not pinned"
+              exit 0
+            fi
+            bin="$(pick)"
+          fi
+          if [ -z "$bin" ]; then
+            echo "::warning::$WANTED was installed but no binary reports it; the run is not pinned"
+            exit 0
+          fi
+          echo "this run captures, bakes and checks wire drift with $bin (Claude Code $WANTED)"
+          echo "DARIO_CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
 
       - name: Pin OAuth credential to platform-dario canonical (sole-refresher)
         # The platform dario container is the SOLE refresher of the shared Max
@@ -288,6 +365,27 @@ jobs:
           echo "closed stale rebake PR #$pr_number"
           echo "state=closed" >> "$GITHUB_OUTPUT"
 
+      - name: Find an open CC version PR
+        # cc-drift-watch.yml's own PR (bot/cc-drift-v*) moves maxTested and the
+        # template label. While one is open, this run leaves both to it: a
+        # rebake does not carry the maxTested bump, and no label-sync PR is
+        # opened. Two PRs moving the same lines would collide on the version
+        # and on the changelog.
+        if: steps.check.outputs.exit_code == '2' || steps.check.outputs.exit_code == '3'
+        id: range_pr
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          # A listing that fails reads as "one is open": the rebake then ships
+          # without the bump and cc-drift-watch.yml drafts it, as before.
+          if open=$(gh pr list --state open --search "head:bot/cc-drift-v" --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // ""'); then
+            echo "open CC version PR: ${open:-none}"
+            echo "open=${open:+true}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::could not list open CC version PRs; treating one as open"
+            echo "open=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Auto-rebake + open PR
         # On drift detection (exit 2), re-bake the template (real write, not
         # --check), check that upstream accepts requests rebuilt from the new
@@ -322,6 +420,7 @@ jobs:
           OPEN_PR_STATE: ${{ steps.open_pr.outputs.state }}
           OPEN_PR_URL: ${{ steps.open_pr.outputs.pr_url }}
           OPEN_PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
+          RANGE_PR_OPEN: ${{ steps.range_pr.outputs.open }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # The directory holding the production seat pool (its accounts/ subdirectory). It is
           # deployment configuration, kept out of this public file. Unset, the upstream check
@@ -428,9 +527,10 @@ jobs:
           # "Wire drift detected" issue is open, so a failed check is filed here, before the gate can
           # read the PR. A nonzero exit is any high-severity finding (betaForModel, cch gate, header
           # set or values, body order, a failed capture) or a check that did not run; the report's
-          # findings say which. Same binary as wire-drift-self-hosted.yml, the one the box deploys.
-          # The bundle does not change betaForModel's result.
-          if [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
+          # findings say which. Same binary as wire-drift-self-hosted.yml, the one the box deploys,
+          # unless this run was pinned to a dispatched version above: then it is that binary, the
+          # one the bake just captured from. The bundle does not change betaForModel's result.
+          if [ -z "${DARIO_CLAUDE_BIN:-}" ] && [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
           set +e
           node scripts/check-wire-drift.mjs > wire-drift-report.json 2> wire-drift-log.txt
           wire_exit=$?
@@ -474,10 +574,29 @@ jobs:
           # and the freshly-baked template never ships to npm. The entry and
           # rebake-summary.md are both written from the diff of the two
           # bundles, so they name what this bake changes.
-          new_version=$(node scripts/rebake-release-prep.mjs)
+          #
+          # A bake captured from a Claude Code version past maxTested moves
+          # maxTested too (--carry-range), so this PR is the one release for
+          # that version. Only when it will merge unattended and the claim is
+          # about the version both checks measured: mayCarry in
+          # scripts/range-bump-carrier.mjs lists the conditions, and reads the
+          # open wire-drift issues itself, since the merge gate holds a rebake
+          # for one that an earlier run left open. Otherwise the bump is left to
+          # cc-drift-watch.yml's PR, which merges on its own.
+          carry=()
+          carry_verdict=$(GH_TOKEN="$STATUS_TOKEN" RANGE_PR_OPEN="$RANGE_PR_OPEN" UPSTREAM="$upstream" WIRE_EXIT="$wire_exit" \
+            WIRE_REPORT=wire-drift-report.json BAKED_VERSION="$cc_version" \
+            node scripts/range-bump-carrier.mjs may-carry || echo '{"carry":false,"reason":"the decision could not be made"}')
+          echo "carry the maxTested bump: $carry_verdict"
+          if [ "$(printf '%s' "$carry_verdict" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).carry === true' 2>/dev/null)" = "true" ]; then
+            carry=(--carry-range)
+          fi
+          new_version=$(node scripts/rebake-release-prep.mjs "${carry[@]}")
           echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
 
-          git add src/cc-template-data.json package.json package-lock.json CHANGELOG.md
+          # The last two are changed only by --carry-range; adding an unchanged
+          # file stages nothing.
+          git add src/cc-template-data.json package.json package-lock.json CHANGELOG.md src/live-fingerprint.ts test/compat-pinned.json
           git commit -m "auto-rebake: template drift detected $(date -u +%Y-%m-%dT%H:%MZ) (v$new_version)"
           git push origin "$branch"
           head_sha=$(git rev-parse HEAD)
@@ -609,7 +728,12 @@ jobs:
         # the same deterministic-bump risk class as cc-drift-watch.yml's
         # SUPPORTED_CC_RANGE.maxTested bump. A red required check leaves the
         # PR open with the bot branch preserved.
-        if: steps.check.outputs.exit_code == '3'
+        #
+        # Not in a run dispatched for a Claude Code version, and not while a
+        # CC version PR is open: cc-drift-watch.yml's PR moves the label with
+        # maxTested, and a label PR beside it would be a second release for
+        # the same version.
+        if: steps.check.outputs.exit_code == '3' && inputs.cc_version == '' && steps.range_pr.outputs.open != 'true'
         id: labelsync
         env:
           # Same PAT-or-token contract as the rebake step. The PAT identity is

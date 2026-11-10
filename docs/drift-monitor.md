@@ -134,6 +134,55 @@ contract, so it needs one thing more before it merges: the upstream check
 described under [The rebake PR](#the-rebake-pr) has to have passed on the
 bundle the PR's head carries. A rebake whose check failed waits for a person.
 
+### One release for a new Claude Code version
+
+A Claude Code version that changes the prompt or the tools used to ship as two
+dario releases half an hour apart. `cc-drift-watch.yml` moved
+`SUPPORTED_CC_RANGE.maxTested` first. The self-hosted runner only reached the
+new version once that merge had run the compat test, so the template watcher
+found the changed shape on its next run and shipped the rebake as a second
+release.
+
+Now `cc-drift-watch.yml` asks the template watcher before it drafts anything.
+It dispatches `cc-drift-template-watch.yml` with the new version as
+`cc_version` and waits up to ten minutes for that run:
+
+- The run pins itself to a `claude` that reports exactly that version,
+  installing it when none does, and names it in `DARIO_CLAUDE_BIN`. The
+  runner holds more than one install (the system one, and a copy under the
+  tool-cache Node), so the check, the bake and the wire-drift check are
+  pointed at one binary and do not depend on `PATH` order. Only a bare
+  `x.y.z` that npm serves as `latest` is installed, and the system install is
+  never touched.
+- **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
+  the version in `test/compat-pinned.json` and carries the release note for
+  the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`
+  finds that PR, drafts nothing, and one release covers both.
+- **Only the label is stale (exit 3), or nothing differs.** No PR comes out of
+  the dispatched run, and `cc-drift-watch.yml` drafts its own PR, which moves
+  `maxTested` and the label together as before.
+
+A rebake carries the bump only when it can merge unattended and the claim is
+about the version that was measured (`mayCarry` in
+`scripts/range-bump-carrier.mjs`):
+
+- no `bot/cc-drift-v*` PR is open;
+- the upstream check passed;
+- the wire-drift check passed, on the same Claude Code version the bundle was
+  captured from;
+- no `Wire drift detected` issue is open. The merge gate holds every rebake
+  while one is, including one an earlier run filed, so a clean check in this
+  run is not enough.
+
+Otherwise the bump is left to `cc-drift-watch.yml`'s PR. A dispatch that
+fails, a run that does not finish in time, and an upstream check with no
+verdict all end the same way, in the two PRs this replaced.
+
+While a rebake PR carries the bump, `cc-drift-watch.yml` does not mark the
+version as checked. Its next hourly run looks again: clean once the PR has
+merged, which closes the drift issue, and back to the dispatch if the PR was
+closed without merging.
+
 ## The rebake PR
 
 On exit 2 the watcher bakes, checks the new bundle against upstream, and opens a

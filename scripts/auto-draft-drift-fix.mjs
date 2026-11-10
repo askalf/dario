@@ -54,6 +54,7 @@ import {
   buildPrBody,
   addPinnedVersion,
   bumpTemplateLabels,
+  rangeBullet,
 } from './_drift-patch-helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -238,9 +239,7 @@ try {
 
 const today = new Date().toISOString().slice(0, 10);
 const promoted = promoteUnreleased(changelog, newDarioVersion, today);
-const driftBullet =
-  `- **Claude Code ${ccVersion} is in the supported range.** ` +
-  `\`dario doctor\` and proxy startup no longer warn that it is untested, as they did for anything newer than ${before}.`;
+const driftBullet = rangeBullet(ccVersion, before);
 // The note scripts/label-sync.mjs writes, word for word, so the released changelog reads the same
 // whichever path moved the label.
 const labelBullet = labelBefore === null ? '' :
