@@ -78,9 +78,9 @@ New features default to `@experimental` for at least one minor before being prom
 
 ### What becomes a GitHub release
 
-Every version bump on `master` publishes to npm and GHCR, but not every bump is a GitHub release that people should have to read:
+Every version bump on `master` publishes to npm and GHCR and is cut as a regular GitHub release, so GitHub's Latest badge and `releases/latest` name the version npm serves:
 
-- **A bot bump** (a `bot/*` branch: `maxTested` to a new Claude Code version, a template label refresh, a template rebake) ships as a **pre-release**. That says who cut it, not what is in it: entries waiting under `## [Unreleased]` are promoted into it and listed in its notes, and npm and GHCR carry it as latest all the same. The mark keeps GitHub's Latest badge, and readers that skip pre-releases such as `releases/latest`, on the newest release a person cut; pre-releases still show in the releases list and feed.
+- **A bot bump** (a `bot/*` branch: `maxTested` to a new Claude Code version, a template label refresh, a template rebake) ships on its own, usually within the hour. Entries waiting under `## [Unreleased]` are promoted into it and listed in its notes. Earlier bot releases were marked pre-release, which left the badge on an older version than the one npm carried; they are not marked any more.
 - **A feature or fix** lands under `## [Unreleased]` without a version bump. A separate release PR (`release: vX.Y.Z`, three files: `package.json`, `package-lock.json` and the CHANGELOG heading) ships what has accumulated, as a rule twice a week and sooner for a fix people are waiting on. One release carries several PRs, and its notes read as one story instead of one line per merge.
 
 ## Semver commitments

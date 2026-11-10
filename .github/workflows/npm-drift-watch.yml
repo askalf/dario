@@ -44,10 +44,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eo pipefail
-          # The newest release INCLUDING pre-releases. Bot releases that track a
-          # Claude Code version are pre-releases and npm latest follows them, so
-          # `releases/latest` (which skips pre-releases) would report drift on
-          # every one of them.
+          # The newest release from the list, pre-releases included. npm latest
+          # follows whatever was released last. `releases/latest` skips
+          # pre-releases: the release workflow no longer cuts any, but a person
+          # can mark one, and it would then report drift against npm.
           REL_JSON=$(gh release list --repo "${{ github.repository }}" --limit 1 --exclude-drafts --json tagName,publishedAt --jq '.[0]')
           TAG=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).tagName")
           PUBLISHED_AT=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).publishedAt")

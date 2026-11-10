@@ -324,8 +324,9 @@ jobs:
         # so the PR is derived uniformly: scripts/release-bump-commit.mjs
         # finds the commit that set package.json to this version (HEAD
         # only when nothing merged after the bump; a docs PR landing
-        # before the hourly tick must not name the release or decide its
-        # pre-release mark), that commit's `(#N)` subject suffix (squash-
+        # before the hourly tick must not name the release, and its head
+        # branch must not stand in for a drift bump's when the matching
+        # issues are closed), that commit's `(#N)` subject suffix (squash-
         # merge convention on master) names the PR, and `gh pr view N
         # --json url,headRefName` resolves it. Outputs (all may be empty
         # if the PR can't be derived):
@@ -546,35 +547,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
-          # UNTRUSTED (a branch name): read through this env var only and
-          # compared against a fixed prefix below, never interpolated.
-          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
           TRIGGER: ${{ github.event_name }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
-          # A release cut from a bot/* branch (a maxTested bump, a template
-          # label refresh, a template rebake) is marked pre-release. That says
-          # who cut it, not what is in it: whatever sat under Unreleased ships
-          # in this build and is listed in its notes, and npm and GHCR carry
-          # it as latest all the same. The mark keeps GitHub's Latest badge,
-          # and the readers that skip pre-releases (`releases/latest`, `gh
-          # release view` without a tag), on the newest release a person cut;
-          # pre-releases still appear in the releases list and feed. The
-          # watchers that must see every release read the newest one including
-          # pre-releases (deployed-version-watch, npm-drift-watch).
-          PRERELEASE=()
-          case "$PR_HEAD_REF" in
-            bot/*) PRERELEASE=(--prerelease) ;;
-          esac
+          # Every release is a regular release, whoever cut it. npm and GHCR
+          # carry each one as latest, so GitHub's Latest badge and the readers
+          # behind it (`releases/latest`, `gh release view` without a tag) have
+          # to name the same version. Releases cut from a bot/* branch used to
+          # be marked pre-release, and the badge then sat on an older version
+          # than the one people were installing. Do not bring the mark back
+          # for a class of release that npm publishes as latest.
           {
             if [ -n "$PR_NUMBER" ] && [ -n "$PR_URL" ]; then
               echo "Auto-released from merge of [PR #${PR_NUMBER}](${PR_URL}) (trigger: ${TRIGGER})."
             else
               echo "Auto-released from master HEAD (trigger: ${TRIGGER}; no PR context resolved)."
-            fi
-            if [ "${#PRERELEASE[@]}" -gt 0 ]; then
-              echo ""
-              echo "Pre-release: a bot cut this version to track a Claude Code version. Everything listed below shipped in it, and npm and GHCR carry it as latest. GitHub's Latest badge stays on the newest release a person cut."
             fi
             echo ""
             cat release-notes.md
@@ -586,8 +573,7 @@ jobs:
 
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes-file body.md \
-            "${PRERELEASE[@]}"
+            --notes-file body.md
 
       - name: Upload attested tarball to the release
         # Runs whenever we are shipping (not only when the release was just
