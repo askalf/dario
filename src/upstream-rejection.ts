@@ -19,6 +19,17 @@ export const MODEL_UNROUTABLE = 'model_unroutable';
  * nothing upstream (dario#1244).
  */
 export const POOL_PARKED = 'pool_parked';
+/**
+ * A request from Claude Desktop's third-party inference mode reached a proxy
+ * that serves Claude on a plan login. dario answered 403 itself and sent
+ * nothing upstream (dario#1363). The mode is built for API keys; in upstream
+ * API-key mode the same request is forwarded.
+ */
+export const DESKTOP_GATEWAY_ON_PLAN = 'desktop_gateway_on_plan';
+export const DESKTOP_GATEWAY_ON_PLAN_MESSAGE =
+  "Claude Desktop's third-party inference mode is not served on a Claude plan login. "
+  + 'The mode is built for API keys: give Desktop an API-key gateway, or run dario in API-key mode (ANTHROPIC_UPSTREAM_API_KEY). '
+  + 'Why: https://github.com/askalf/dario/blob/master/docs/account-risk.md';
 
 /** Classify subscription entitlement failures separately from temporary quota exhaustion. */
 export function classifyUpstreamRejection(status: number, body: string): UpstreamRejection {

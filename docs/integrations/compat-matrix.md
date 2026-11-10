@@ -7,6 +7,7 @@ Status legend:
 - **✅ Working** — code path exercised, walkthrough or per-tool docs exist, no known dario-side gaps.
 - **⚪ Inferred** — uses a generic protocol path (Anthropic SDK or OpenAI-compat passthrough) that dario handles correctly, but no tool-specific test exists. Should work; report if not.
 - **🟡 Untested** — listed in the README's "every tool that honors those env vars" sentence, but no walkthrough, no per-tool docs, and no smoke test.
+- **🔴 Refused** — dario answers the request itself and sends nothing upstream. The row says why.
 
 | Tool | Protocol | Routes via | Status | Setup |
 |---|---|---|---|---|
@@ -25,7 +26,7 @@ Status legend:
 | **Codex CLI** | OpenAI | OpenAI-compat backend | ⚪ Inferred | `dario backend add openai --key=...` then point Codex CLI at `OPENAI_BASE_URL=http://localhost:3456/v1`. The OpenAI backend is a byte-for-byte passthrough (verified by `test/openai-backend-passthrough.mjs`); no Codex-specific code path exists or is needed. |
 | **Hermes** | Anthropic | Claude backend | ⚪ Inferred | Identity-detected by name in CC's identity markers; routes through the standard preserve-tools path. No dedicated walkthrough yet. |
 | **Windsurf** | Anthropic | Claude backend | 🟡 Untested | Listed in README — uses Anthropic-shape requests, should pass through dario's Claude backend. No dedicated walkthrough or smoke test. Open an issue with `dario doctor` output if it doesn't work. |
-| **Claude Desktop** | Anthropic | Claude backend | 🟡 Untested | Generic Anthropic SDK consumer; should work via the same path Claude Code uses. No dedicated walkthrough. |
+| **Claude Desktop** (third-party inference) | Anthropic | Claude backend | 🔴 Refused on a plan login | Desktop's Developer → Configure Third-Party Inference → Gateway mode is built for API keys. On a Claude plan login dario answers it with a 403 (`x-dario-upstream-rejection: desktop_gateway_on_plan`). In upstream API-key mode (`ANTHROPIC_UPSTREAM_API_KEY`) it is forwarded; that pairing is untested. Why: [`account-risk.md`](../account-risk.md#claude-desktops-third-party-inference-mode). Desktop as an MCP client of `dario mcp` is the MCP clients row, and works. |
 | **GitHub Copilot** | Proprietary | n/a | 🟡 Not applicable | Copilot's BYOK paths are surface-specific (Copilot Chat in VS Code, GitHub.com, etc.) and don't expose a generic OpenAI/Anthropic base-URL override. Listed in README for completeness; no dario integration is currently possible without a vendor-side change. |
 
 ## What "Inferred" means in practice

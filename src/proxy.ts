@@ -12,7 +12,7 @@ import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHe
 import { allowedHosts, isBrowserRequest, isCrossOriginAllowed, isHostAllowed, trustedOriginSet } from './browser-guard.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
-import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, UnsupportedClientToolError, CLIENT_TOOL_MCP_PREFIX, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, isDesktopGatewayRequest, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, UnsupportedClientToolError, CLIENT_TOOL_MCP_PREFIX, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { rebindBodyIdentity } from './body-identity.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
@@ -54,7 +54,7 @@ function continuationOf(guard: MidstreamGuard | null, depth: number): RequestCon
 }
 import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel, type ClaudeTarget } from './claude-model.js';
-import { MODEL_UNROUTABLE } from './upstream-rejection.js';
+import { MODEL_UNROUTABLE, DESKTOP_GATEWAY_ON_PLAN, DESKTOP_GATEWAY_ON_PLAN_MESSAGE } from './upstream-rejection.js';
 import { compareKeepMs, pruneCompareRecords, readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
@@ -1532,7 +1532,7 @@ export interface ProxyLogEntry {
   continuation_depth?: number;
   /** On a resume leg: the request number whose stream it resumes (the guard's number). */
   continuation_of?: number;
-  reject?: string;        // reason if rejected before upstream (auth, queue-full, key-model, key-budget-usd|tokens, ...)
+  reject?: string;        // reason if rejected before upstream (auth, queue-full, key-model, key-budget-usd|tokens, desktop-gateway, ...)
   error?: string;         // sanitized error message if request failed
   event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
   /** The cache trace of a Codex request (src/cache-trace.ts): the key it went out under and what it shared with the previous request on that key. */
@@ -4732,6 +4732,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
+      // Claude Desktop's third-party inference mode, recognised once here from
+      // the body as it arrived: the in-place swaps further down drop
+      // `parsedBody`. Acted on at "Claude's turn", where the request is known
+      // to be bound for Claude.
+      const desktopGateway = isDesktopGatewayRequest(parsedBody, req.headers['user-agent']);
+
       // A named key's model allowlist (dario#1318): refused here, in the
       // request's own wire shape, before anything goes upstream.
       if (requestAuth.key?.models?.length && parsedBody) {
@@ -5419,6 +5425,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         requestCount++;
         res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
         res.end(JSON.stringify(unsupportedOnClaudeError(responsesUnsupported[0])));
+        return;
+      }
+
+      // Claude Desktop's third-party inference mode on a plan login
+      // (dario#1363): refused by name before a seat is picked, so nothing goes
+      // upstream. The mode is built for API keys, and `isGenuineCCClient`
+      // accepts its body, so it would otherwise leave as the app's own request
+      // on a subscription token. Upstream API-key mode is the pairing the mode
+      // was built for and is served as before. `--passthrough` is not an
+      // exemption: it forwards the same body on the same login.
+      if (desktopGateway && !upstreamApiKey) {
+        requestCount++;
+        console.log(`[dario] #${requestCount} refused: Claude Desktop third-party inference mode on a plan login (docs/account-risk.md)`);
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath, status: 403, reject: 'desktop-gateway',
+        });
+        res.writeHead(403, { ...JSON_HEADERS, 'x-dario-upstream-rejection': DESKTOP_GATEWAY_ON_PLAN });
+        res.end(JSON.stringify(isOpenAI || isResponses
+          ? { error: { message: DESKTOP_GATEWAY_ON_PLAN_MESSAGE, type: 'permission_error', param: null, code: DESKTOP_GATEWAY_ON_PLAN } }
+          : { type: 'error', error: { type: 'permission_error', message: DESKTOP_GATEWAY_ON_PLAN_MESSAGE } }));
         return;
       }
 

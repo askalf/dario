@@ -1809,6 +1809,39 @@ export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean 
 }
 
 /**
+ * Claude Desktop's third-party inference mode (Developer → Configure
+ * Third-Party Inference → Gateway) runs Claude Code inside the app under the
+ * entrypoint `claude-desktop-3p`, and a gateway sees that name twice: in the
+ * billing line at system[0] (`cc_entrypoint=claude-desktop-3p;`) and in the
+ * user-agent (`claude-cli/<v> (external, claude-desktop-3p, agent-sdk/<v>)`).
+ * Either is enough: a hop in front of dario can replace the user-agent, and a
+ * client that reshapes `system` still sends the header.
+ *
+ * The mode takes a base URL and a static key; it is built for API keys.
+ * `isGenuineCCClient` accepts its body, because the identity block names the
+ * Claude Agent SDK, so on a plan login the app's own request, with its own
+ * tools and identity headers, would go out on a subscription token. The proxy
+ * refuses that pairing and serves the mode only in upstream API-key mode
+ * (dario#1363). Exported for tests.
+ */
+const DESKTOP_GATEWAY_BILLING = /cc_entrypoint=claude-desktop-3p(?![\w-])/;
+const DESKTOP_GATEWAY_USER_AGENT = /(?<![\w-])claude-desktop-3p(?![\w-])/;
+
+export function isDesktopGatewayRequest(
+  clientBody: Record<string, unknown> | null | undefined,
+  userAgent: string | string[] | undefined,
+): boolean {
+  const ua = Array.isArray(userAgent) ? userAgent.join(' ') : userAgent;
+  if (typeof ua === 'string' && DESKTOP_GATEWAY_USER_AGENT.test(ua)) return true;
+  const sys = clientBody?.system;
+  if (!Array.isArray(sys)) return false;
+  const first = sys[0] as { text?: unknown } | undefined;
+  return typeof first?.text === 'string'
+    && first.text.includes('x-anthropic-billing-header:')
+    && DESKTOP_GATEWAY_BILLING.test(first.text);
+}
+
+/**
  * The client's tool_choice, when it can be honoured against the tools going out: `auto`, `any`
  * and `none` always; a forced `{type:'tool', name}` with the name translated the way the tool
  * itself was (remap mode: the client name -> its CC tool or fallback slot; preserve mode: the
