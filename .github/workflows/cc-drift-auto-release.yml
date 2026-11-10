@@ -713,3 +713,27 @@ jobs:
           if [[ "$PR_HEAD_REF" == bot/cc-drift-v* ]]; then
             echo "→ matching cc-drift issues were closed"
           fi
+
+      - name: Write the version this run shipped
+        # homebrew-tap-notify.yml runs after this run and reads the artifact
+        # below by this run's id. That artifact is how it knows this run
+        # shipped a release, and which: a run the gate stopped leaves none,
+        # and so does one that failed before here, since each step above
+        # carries the default success() condition.
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: printf '%s\n' "$VERSION" > released-version.txt
+
+      - name: Upload it for the Homebrew notification
+        # Never fatal: the release is already out, and a run that ends red is
+        # one the hosted instance's deploy is not started for. Without the
+        # artifact the tap finds the version on its six-hourly schedule.
+        if: steps.gate.outputs.proceed == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: released-version
+          path: released-version.txt
+          if-no-files-found: error
+          retention-days: 1
