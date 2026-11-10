@@ -3,12 +3,11 @@
  * Find the commit that set package.json to the version being released.
  *
  * cc-drift-auto-release.yml names a release after the PR that bumped the
- * version and, from that PR's head branch, decides whether the release is a
- * pre-release (a bot/* head). It used to read the PR off HEAD, which is the
- * bump only when nothing merged after it: a docs PR landing between a bot
- * bump and the hourly tick would have named the release and turned the bot's
- * build into a regular release, and the reverse order would have marked a
- * person's release as a pre-release. So the PR is read off the bump commit:
+ * version and, from that PR's head branch, decides whether the release
+ * resolves drift issues (a bot/cc-drift-* head). It used to read the PR off
+ * HEAD, which is the bump only when nothing merged after it: a docs PR
+ * landing between a bot bump and the hourly tick would have named the release
+ * and left the drift issues open. So the PR is read off the bump commit:
  * the newest commit in the fetched history whose package.json carries the
  * version while its parent's does not.
  *

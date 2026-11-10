@@ -5,7 +5,7 @@
  * The case that matters is the one nobody watches: a bot bump merges, an
  * unrelated PR merges right after, and the hourly tick releases from a HEAD
  * that is not the bump. Read off HEAD, the release would carry the wrong PR
- * and the wrong pre-release mark. Each scenario here is a throwaway git repo
+ * and the wrong head branch. Each scenario here is a throwaway git repo
  * with exactly that history.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
