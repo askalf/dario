@@ -19,6 +19,15 @@ name: Codex drift watch
 #   - The wire contract fails, or the list cannot be fetched: an issue, because
 #     a person has to look.
 # A snapshot that ships empty makes the first enabled run open the seed PR.
+#
+# A third question rides on the model list: is CODEX_CLIENT_VERSION itself stale?
+# The backend leaves a model out of the list for a client version older than the
+# model (dario#1842), and the constant is only as new as the day it was written.
+# So the list is fetched a second time as npm's `latest` release of @openai/codex.
+# A model listed there and not as dario's version is one the constant hides, and
+# this workflow opens a bot/codex-client-version-* PR that moves the constant,
+# the configuration reference and the snapshot together, with its release note.
+# scripts/codex-models-probe.mjs holds the fetches, the comparison and the edit.
 on:
   schedule:
     - cron: '29 5 * * *'
@@ -93,7 +102,7 @@ jobs:
           client_version=$(node --input-type=module -e "const m = await import(process.cwd() + '/dist/codex-backend.js'); console.log(m.CODEX_CLIENT_VERSION)")
           echo "client_version=$client_version" >> "$GITHUB_OUTPUT"
           export client_version
-          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version='+encodeURIComponent(process.env.client_version),{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})" 2>models.err; fetch_models=$?
+          node scripts/codex-models-probe.mjs list "$client_version" live-models.json 2>models.err; fetch_models=$?
           # The model list is its own probe. A fetch the upstream rate-limited is inconclusive (3) for the same
           # reason the wire probe is; any other fetch failure, or a list that differs from the snapshot, is drift.
           if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; elif grep -q "models 429" models.err; then echo "::warning::Codex model list fetch was rate-limited (429) — inconclusive, not drift"; models=3; else cat models.err; models=1; fi
@@ -117,10 +126,43 @@ jobs:
           if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; issue=1; fi
           if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; if [ "$fetch_models" -eq 0 ]; then snapshot_drift=1; else issue=1; fi; fi
           if [ "$fetch_models" -eq 0 ] && [ "$models" -eq 0 ]; then snapshot_match=1; fi
+          # The same list as the newest released Codex CLI, when that is newer than the version dario names.
+          # A model listed there and not in the list above is one CODEX_CLIENT_VERSION hides (stale). Nothing
+          # hidden, or no newer release, is current. A release that cannot be read or a second fetch that
+          # fails gives neither: no verdict on the version this run, and none on the two probes above.
+          version_stale=0; version_current=0; latest_version=''
+          if [ "$fetch_models" -eq 0 ]; then
+            if latest_version=$(node scripts/codex-models-probe.mjs newer-release "$client_version" 2>release.err); then
+              if [ -z "$latest_version" ]; then
+                version_current=1
+              elif node scripts/codex-models-probe.mjs list "$latest_version" latest-models.json 2>latest-models.err; then
+                if hidden=$(node scripts/codex-models-probe.mjs hidden live-models.json latest-models.json); then
+                  if [ -n "$hidden" ]; then
+                    version_stale=1
+                    echo "::notice::Codex CLI $latest_version is told about models that $client_version is not: $(echo "$hidden" | tr '\n' ' ')"
+                  else
+                    version_current=1
+                  fi
+                else
+                  echo "::warning::the two model lists could not be compared; no verdict on the client version this run"
+                fi
+              else
+                echo "::warning::the model list could not be fetched as Codex CLI $latest_version; no verdict on the client version this run"
+                cat latest-models.err
+              fi
+            else
+              echo "::warning::the latest @openai/codex release could not be read; no verdict on the client version this run"
+              cat release.err
+              latest_version=''
+            fi
+          fi
           {
             echo "issue=$issue"
             echo "snapshot_drift=$snapshot_drift"
             echo "snapshot_match=$snapshot_match"
+            echo "version_stale=$version_stale"
+            echo "version_current=$version_current"
+            echo "latest_version=$latest_version"
           } >> "$GITHUB_OUTPUT"
           if [ "$drift" -eq 1 ]; then echo 'exit_code=1' >> "$GITHUB_OUTPUT"; elif [ "$inconclusive" -eq 1 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; else echo 'exit_code=0' >> "$GITHUB_OUTPUT"; fi
       # The list a reviewer compares the snapshot PR against, from the same run.
@@ -149,18 +191,46 @@ jobs:
           name: codex-live-models-${{ github.run_id }}
           path: live-models.json
           retention-days: 7
-      # What the report step carries: the live list in the snapshot's place, and the two bodies. The
-      # diff is the report step's to add to the PR body.
+      # A stale client version is reported once per release. The bump is written from master as it is
+      # today, and its CHANGELOG moves with every merge, so writing it again on each daily run would push
+      # a new commit to an open PR that already says the same thing. An open PR whose title names the
+      # release found today is left as it is.
+      - name: Find an open client version PR
+        id: version_pr
+        if: ${{ !cancelled() && steps.check.outputs.version_stale == '1' }}
+        env:
+          VERSION_PR_TITLE: "fix: Ask for the ChatGPT model list as Codex CLI ${{ steps.check.outputs.latest_version }}"
+        run: |
+          set -eo pipefail
+          open_title=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:bot/codex-client-version-" --json title,headRefName,isCrossRepository --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bot/codex-client-version-")))][0].title // ""')
+          if [ "$open_title" = "$VERSION_PR_TITLE" ]; then
+            echo "an open PR already carries this release: $open_title"
+            echo 'report=0' >> "$GITHUB_OUTPUT"
+          else
+            echo 'report=1' >> "$GITHUB_OUTPUT"
+          fi
+      # What the report steps carry: the live list in the snapshot's place, and the bodies. The diff is
+      # the report step's to add to the PR body.
       - name: Write the reports
-        if: ${{ !cancelled() && (steps.check.outputs.snapshot_drift == '1' || steps.check.outputs.issue == '1') }}
+        id: reports
+        if: ${{ !cancelled() && (steps.check.outputs.snapshot_drift == '1' || steps.check.outputs.issue == '1' || steps.version_pr.outputs.report == '1') }}
         env:
           SNAPSHOT_DRIFT: ${{ steps.check.outputs.snapshot_drift }}
           ISSUE: ${{ steps.check.outputs.issue }}
+          VERSION_STALE: ${{ steps.check.outputs.version_stale }}
+          VERSION_REPORT: ${{ steps.version_pr.outputs.report }}
           CLIENT_VERSION: ${{ steps.check.outputs.client_version }}
+          LATEST_VERSION: ${{ steps.check.outputs.latest_version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eo pipefail
-          if [ "$SNAPSHOT_DRIFT" = 1 ]; then
+          # With a stale client version the snapshot is not reported by itself: the list as the version
+          # dario names today is the one the bump replaces, and the bump PR carries the list as the newer
+          # version. The Report step's `pr` input says the same.
+          if [ "$VERSION_REPORT" = 1 ]; then
+            node scripts/codex-models-probe.mjs bump "$LATEST_VERSION" live-models.json latest-models.json > version-pr-body.md
+          fi
+          if [ "$SNAPSHOT_DRIFT" = 1 ] && [ "$VERSION_STALE" != 1 ]; then
             cp live-models.json test/fixtures/codex-models.snapshot.json
             {
               echo "## Codex model snapshot"
@@ -186,7 +256,7 @@ jobs:
           issue: ${{ steps.check.outputs.issue == '1' }}
           issue-title: Codex drift detected
           issue-body-file: issue-body.md
-          pr: ${{ steps.check.outputs.snapshot_drift == '1' }}
+          pr: ${{ steps.check.outputs.snapshot_drift == '1' && steps.check.outputs.version_stale != '1' }}
           pr-branch-prefix: bot/codex-models-
           pr-files: test/fixtures/codex-models.snapshot.json
           pr-title: "test(codex): model snapshot follows the account's list"
@@ -210,4 +280,45 @@ jobs:
           # Same match as the step that opens them: our branch prefix, in this repository.
           for n in $(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:bot/codex-models-" --json number,headRefName,isCrossRepository --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bot/codex-models-"))) | .number'); do
             gh pr close "$n" -R "$GITHUB_REPOSITORY" --delete-branch --comment "Closed unmerged: the account's model list matches the committed snapshot again on [run #$GITHUB_RUN_ID]($RUN_URL), so this PR no longer reflects the live list. A later change opens a new one."
+          done
+      # One PR at a time under bot/codex-client-version-, with a label of its own so that neither the
+      # codex-drift issue nor the snapshot PR above is taken for it. It carries the four files the bump
+      # wrote. Opened with the PAT for the same reason the snapshot PR is: its checks have to run.
+      - name: Report a stale client version
+        id: version_report
+        if: ${{ !cancelled() && steps.version_pr.outputs.report == '1' && steps.reports.outcome == 'success' }}
+        uses: askalf/ci/actions/drift-report@b3ace54b455a479b01e25c82f98e98a2212699a4 # main 2026-11-09, askalf/ci#196
+        with:
+          label: codex-client-version
+          label-description: A newer Codex CLI is told about a model dario's client version is not
+          pr: 'true'
+          pr-branch-prefix: bot/codex-client-version-
+          pr-files: src/codex-backend.ts docs/configuration.md CHANGELOG.md test/fixtures/codex-models.snapshot.json
+          pr-title: "fix: Ask for the ChatGPT model list as Codex CLI ${{ steps.check.outputs.latest_version }}"
+          pr-body-file: version-pr-body.md
+          pr-base: master
+          author-name: codex-drift-watch[bot]
+          token: ${{ secrets.DARIO_DRIFT_BOT_PAT || github.token }}
+      - name: Keep the client version PR's title and body current
+        # The report step refreshes an open PR by pushing the files and leaves its title and body as they
+        # were opened. It reaches here only when the open PR named another release (the step that looks
+        # for one skips a PR that names today's), so both are rewritten for the release now carried.
+        if: ${{ !cancelled() && steps.version_report.outputs.pr-action == 'refreshed' }}
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.version_report.outputs.pr-number }}
+          VERSION_PR_TITLE: "fix: Ask for the ChatGPT model list as Codex CLI ${{ steps.check.outputs.latest_version }}"
+        run: gh pr edit "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --title "$VERSION_PR_TITLE" --body-file version-pr-body.md
+      - name: Close an obsolete client version PR
+        # Current means the list was fetched as dario's version and either no newer Codex CLI is released
+        # or the newest one lists nothing more. An open PR that moves the version then has nothing left
+        # to fix: the version on master was moved another way, or the backend changed what it lists. A
+        # run that could not tell (version_current is 0) leaves the PR alone.
+        if: ${{ !cancelled() && steps.check.outputs.version_current == '1' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          for n in $(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:bot/codex-client-version-" --json number,headRefName,isCrossRepository --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bot/codex-client-version-"))) | .number'); do
+            gh pr close "$n" -R "$GITHUB_REPOSITORY" --delete-branch --comment "Closed unmerged: on [run #$GITHUB_RUN_ID]($RUN_URL) the newest Codex CLI release lists no model that the client version on master does not, so there is nothing left for this PR to change. A later release that does opens a new one."
           done
