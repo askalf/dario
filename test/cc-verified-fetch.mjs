@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Tests for scripts/cc-verified-fetch.mjs, the workflow step that calls it and
- * the daily check that runs it against the real registry.
+ * Tests for scripts/cc-verified-fetch.mjs, the workflow step that calls it,
+ * the daily check that runs it against the real registry, and the live test's
+ * use of it.
  *
  * The template watcher pins a dispatched run to one Claude Code version. When
  * no installed binary reports it, the build is fetched and has to be proved
@@ -225,6 +226,26 @@ check('a fetched build that reports another version fails the run',
   /if \[ -z "\$bin" \]; then\n\s*echo "::error::[^\n]*does not report that version"\n\s*exit 1/.test(dailyRun));
 check('npm not naming a version is not a failure of the key or the script',
   /if \[\[ ! "\$latest" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n[^\n]*\n\s*echo "::warning::[^\n]*nothing was checked this run"\n\s*exit 0/.test(dailyRun));
+
+header('the live test');
+// live-test.yml runs a pull request's head on the dario-exec runner. A head that claims a Claude Code newer
+// than the runner's used to get it from `npm i` plus the package's own install script. It now comes from the
+// same verifying fetch, and a build that cannot be verified fails the check.
+const live = readFileSync(join(REPO, '.github', 'workflows', 'live-test.yml'), 'utf-8');
+const liveFrom = live.indexOf('- name: "Stages: install, build, cc-detect, cli, doctor"');
+const liveRun = live.slice(liveFrom, live.indexOf('\n      - name: ', liveFrom + 10)).split('run: |')[1] ?? '';
+check('the claimed build is fetched by the verifying script into the run\'s throwaway HOME, under an empty environment',
+  liveRun.includes('fetched="$(env -i PATH="$PATH" HOME="$WT_HOME" node scripts/cc-verified-fetch.mjs "$claimed" "$WT_HOME/cc" 2> "$WT_HOME/cc-fetch.err" || true)"'));
+check('Claude Code is not installed with npm, and no package script is run',
+  liveRun.length > 0 && !liveRun.includes('@anthropic-ai/claude-code') && !liveRun.includes('install.cjs') && !/npm (?:i|install|update)\b/.test(liveRun));
+check('the fetched binary has to report the claimed version, under the same empty environment, before the stages use it',
+  liveRun.includes('installed="$(env -i PATH="$PATH" HOME="$WT_HOME" "$fetched" --version')
+  && /if \[ -n "\$fetched" \] && \[ "\$installed" = "\$claimed" \]; then\n\s*CC_PATH="\$\(readlink -f "\$fetched"\)"/.test(liveRun));
+check('a build that cannot be verified fails the check with the script\'s reason',
+  /elif \[ -z "\$fetched" \]; then\n\s*cc_fail="[^\n]*could not be fetched and verified: \$\(head -c 200 "\$WT_HOME\/cc-fetch\.err"[^\n]*\n\s*echo "::error::\$\{cc_fail\}/.test(liveRun)
+  && /if \[ -n "\$cc_fail" \]; then\n\s*echo "cc-fetch: FAIL \(\$\{cc_fail\}\)" \| tee -a "\$report"\n\s*fail="cc-fetch"/.test(liveRun));
+check('a fetched build that reports another version fails the check too',
+  /else\n\s*cc_fail="the build fetched for claude-code@\$\{claimed\} reports [^\n]*\n\s*echo "::error::\$\{cc_fail\}/.test(liveRun));
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

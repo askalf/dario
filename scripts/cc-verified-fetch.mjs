@@ -6,6 +6,8 @@
  * it was dispatched for, and calls this when no installed `claude` reports
  * that version. The runner holds a login, so the build is fetched, verified
  * and unpacked: nothing is installed and no package script runs.
+ * live-test.yml calls it the same way for a pull request that claims a
+ * Claude Code version newer than the one its runner has.
  *
  * The version is only known when the run is dispatched, so no hash of it can
  * be committed ahead of time. What is committed is who has to have signed it.

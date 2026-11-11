@@ -166,7 +166,9 @@ It dispatches `cc-drift-template-watch.yml` with the new version as
   script and the kept key against the real registry. It does not promise to
   fail first. It reads the signature of a build that is already published,
   so a release signed with a new key can reach the watcher between two
-  daily runs.
+  daily runs. `live-test.yml` uses the same fetch for a pull request that
+  claims a `maxTested` newer than the runner's Claude Code, and there a
+  refusal fails the check.
 - **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
   the version in `test/compat-pinned.json` and carries the release note for
   the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`
