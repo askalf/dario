@@ -84,7 +84,13 @@ jobs:
           # KNOWN_TRANSIENT regex set. One per line, OR'd in grep -E.
           # Anchored loosely (no ^/$) because GHA log lines have
           # timestamp/group prefixes. Extend via PR; do not edit in
-          # place without a corresponding test on a saved log fixture.
+          # place without a corresponding test on a saved log fixture
+          # (test/supervisor-transient-patterns.mjs).
+          #
+          # "Temporary failure resolving" is apt on a GitHub-hosted
+          # runner when the Ubuntu archive hosts do not resolve. A re-run
+          # passes only once they resolve again: one re-run is all this
+          # sweep gives a run, so a longer outage still ends red.
           TRANSIENT_PATTERNS='could not read Username for .https://github\.com.
           terminal prompts disabled
           HTTP 401: Bad credentials
@@ -92,6 +98,7 @@ jobs:
           HTTP 503
           ECONNRESET
           ETIMEDOUT
+          Temporary failure resolving
           Unable to reserve cache with key
           TLOG_CREATE_ENTRY_ERROR
           error creating tlog entry'
