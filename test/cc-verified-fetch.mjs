@@ -13,12 +13,13 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { Writable } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  NPM_REGISTRY_KEYS, REGISTRY, fetchVerified, isPlainVersion, metadataProblem, platformPackage, signedByRegistry, signedMessage, tarballUrl,
+  NPM_REGISTRY_KEYS, REGISTRY, fetchVerified, isPlainVersion, metadataProblem, platformPackage, scopedName, signedByRegistry, signedMessage, tarballUrl, versionUrl,
 } from '../scripts/cc-verified-fetch.mjs';
 
 let pass = 0, fail = 0;
@@ -73,6 +74,9 @@ const REG = 'http://127.0.0.1:1';
 const doc = (over = {}, dist = {}) => ({ name: LINUX, version: '9.9.9', dist: { integrity: INTEGRITY, tarball: tarballUrl(LINUX, '9.9.9', REG), signatures: good.signatures, ...dist }, ...over });
 const problem = (d) => metadataProblem(d, LINUX, '9.9.9', { registry: REG, keys: KEYS });
 check('the registry\'s tarball address for a scoped package', tarballUrl(LINUX, '2.1.322') === `${REGISTRY}/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.322.tgz`);
+check('the version document\'s address carries the scope and the name as one path segment', versionUrl(LINUX, '2.1.322') === `${REGISTRY}/@anthropic-ai%2fclaude-code-linux-x64/2.1.322`);
+check('a scoped name is two plain parts and nothing else', scopedName(LINUX)?.scope === '@anthropic-ai' && scopedName(LINUX)?.base === 'claude-code-linux-x64'
+  && [undefined, 'claude-code', '@a/b/c', '@a/', '@/b', '@a/b?x=1', '@a/../b', '@A/b', '@a/b c'].every((n) => scopedName(n) === null && versionUrl(n, '1.2.3') === null && tarballUrl(n, '1.2.3') === null));
 check('a document that names the package and version, with its own tarball address and a kept signature, has no problem', problem(doc()) === null);
 check('another name or version is refused', /another package or version/.test(problem(doc({ name: '@anthropic-ai/claude-code' }))) && /another package or version/.test(problem(doc({ version: '9.9.8' }))));
 check('a tarball anywhere else is refused, a sibling path on the same host too', /not the registry's own/.test(problem(doc({}, { tarball: 'https://example.com/x.tgz' })))
@@ -93,11 +97,17 @@ let served = { tarball, signer: mine, hits: [] };
 const server = createServer((req, res) => {
   served.hits.push(req.url);
   const base = `http://127.0.0.1:${server.address().port}`;
-  if (req.url === `/${LINUX.replace('/', '%2f')}/9.9.9`) {
+  if (req.url === new URL(versionUrl(LINUX, '9.9.9', base)).pathname) {
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ name: LINUX, version: '9.9.9', dist: { integrity: tarIntegrity, tarball: tarballUrl(LINUX, '9.9.9', base), signatures: [{ keyid: 'SHA256:test-key', sig: sigBy(served.signer, LINUX, '9.9.9', tarIntegrity) }] } }));
   }
-  if (req.url === `/${LINUX}/-/claude-code-linux-x64-9.9.9.tgz`) return res.end(served.tarball);
+  if (req.url === `/${LINUX}/-/claude-code-linux-x64-9.9.9.tgz`) {
+    if (!served.cut) return res.end(served.tarball);
+    // A connection cut part way: the length promises the whole tarball, half of it arrives, then the socket closes.
+    res.writeHead(200, { 'content-length': served.tarball.length });
+    res.write(served.tarball.subarray(0, Math.floor(served.tarball.length / 2)));
+    return setTimeout(() => res.destroy(), 50);
+  }
   res.statusCode = 404;
   return res.end('{}');
 });
@@ -122,6 +132,19 @@ check('a version the registry does not have is refused', /has no .* at this vers
 check('a version that is not x.y.z, or a platform with no package, is refused without a request',
   /not a bare x\.y\.z/.test(await refusal({ version: 'latest', dest })) && /no package for this platform/.test(await refusal({ version: '9.9.9', dest, name: null })) && served.hits.length === 1);
 check('with the real keys the test registry is not trusted', /no signature from a registry key kept/.test(await refusal({ version: '9.9.9', dest, keys: NPM_REGISTRY_KEYS })));
+check('a name that is not a scoped npm name is refused without a request', /not a scoped npm name/.test(await refusal({ version: '9.9.9', dest, name: 'claude-code' })) && served.hits.length === 2);
+
+const FAILED = /^the download or the write failed before the build was verified$/;
+served = { tarball, signer: mine, hits: [], cut: true };
+check('a download cut part way is a refusal, and nothing is left behind', FAILED.test(await refusal({ version: '9.9.9', dest })) && !existsSync(dest));
+
+served = { tarball, signer: mine, hits: [] };
+const fullDisk = () => new Writable({ write(_chunk, _enc, cb) { cb(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })); } });
+check('a disk that cannot be written is a refusal, not a crash, and nothing is left behind', FAILED.test(await refusal({ version: '9.9.9', dest, openTarball: fullDisk })) && !existsSync(dest));
+const neverOpens = () => { const w = new Writable({ write(_c, _e, cb) { cb(); } }); process.nextTick(() => w.destroy(new Error('EACCES: permission denied'))); return w; };
+check('a file that fails before any byte is written is a refusal too', FAILED.test(await refusal({ version: '9.9.9', dest, openTarball: neverOpens })) && !existsSync(dest));
+check('a download past the size a build can have is refused part way, and nothing is left behind', /larger than a Claude Code build/.test(await refusal({ version: '9.9.9', dest, maxBytes: 16 })) && !existsSync(dest));
+check('after those failures the same call still succeeds', existsSync(await fetchVerified({ version: '9.9.9', dest, name: LINUX, registry, keys: KEYS })));
 server.close();
 rmSync(tmp, { recursive: true, force: true });
 
@@ -130,6 +153,8 @@ const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encodi
 check('no arguments, or too many, is a usage error (exit 2)', cli().status === 2 && cli('2.1.322').status === 2 && cli('2.1.322', 'a', 'b').status === 2);
 const bad = cli('latest', join(tmpdir(), 'cc-verified-never'));
 check('a refusal exits 1 with one line on stderr and prints no path', bad.status === 1 && bad.stdout === '' && bad.stderr === 'the version is not a bare x.y.z\n');
+const source = readFileSync(SCRIPT, 'utf-8');
+check('the download and the file are one pipeline, so an error on either side is caught', source.includes("import { pipeline } from 'node:stream/promises';") && /await pipeline\(\s*Readable\.fromWeb\(res\.body\),/.test(source) && !source.includes('.replace('));
 
 header('the workflow step');
 const template = readFileSync(join(REPO, '.github', 'workflows', 'cc-drift-template-watch.yml'), 'utf-8');
