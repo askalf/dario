@@ -10,6 +10,9 @@ name: CC verified fetch check
 # This runs the same fetch against npm's latest build every day, on demand,
 # and whenever the script changes: the registry's answer, the signature, the
 # sha512 of the download, the unpacking, and the version the binary reports.
+# It is a separate check, not an early warning: it reads the signature of a
+# build that is already published, so a release signed with a new key can
+# reach the template watcher between two daily runs.
 #
 # A refusal fails the run, and the error carries the script's one line. "no
 # signature from a registry key kept in this repository" means npm signs with
