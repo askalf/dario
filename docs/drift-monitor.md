@@ -161,6 +161,12 @@ It dispatches `cc-drift-template-watch.yml` with the new version as
   unpacks the one binary into the job's temp directory. No package script
   runs on the runner. If npm rotates its signing key the fetch refuses and
   the run goes on unpinned, until the new key is added to the script.
+  `cc-verified-fetch-check.yml` runs the same fetch against npm's latest
+  build every day, and whenever the script changes: a separate check of the
+  script and the kept key against the real registry. It does not promise to
+  fail first. It reads the signature of a build that is already published,
+  so a release signed with a new key can reach the watcher between two
+  daily runs.
 - **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
   the version in `test/compat-pinned.json` and carries the release note for
   the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`

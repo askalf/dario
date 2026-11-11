@@ -1,0 +1,82 @@
+name: CC verified fetch check
+
+# scripts/cc-verified-fetch.mjs decides what counts as a Claude Code build
+# published by npm: a signature made by a registry key kept in that script.
+# cc-drift-template-watch.yml calls it only when a new Claude Code version is
+# out and the runner does not have it yet. So a signing key npm has rotated,
+# or a fault in the script, would first show there, as a dispatched run that
+# goes on unpinned with a warning.
+#
+# This runs the same fetch against npm's latest build every day, on demand,
+# and whenever the script changes: the registry's answer, the signature, the
+# sha512 of the download, the unpacking, and the version the binary reports.
+# It is a separate check, not an early warning: it reads the signature of a
+# build that is already published, so a release signed with a new key can
+# reach the template watcher between two daily runs.
+#
+# A refusal fails the run, and the error carries the script's one line. "no
+# signature from a registry key kept in this repository" means npm signs with
+# a key that is not in NPM_REGISTRY_KEYS: read
+# https://registry.npmjs.org/-/npm/v1/keys and add the key there.
+#
+# The build is unpacked into the job's temp directory and removed with it.
+# Nothing is installed, and the runner's own `claude` is not touched.
+
+on:
+  schedule:
+    - cron: '23 5 * * *'   # daily 05:23 UTC, offset from the other watchers
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - scripts/cc-verified-fetch.mjs
+      - .github/workflows/cc-verified-fetch-check.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cc-verified-fetch-check
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    # Never from a fork. This job is meaningless anywhere but this
+    # repository, and the forks inherit the schedule. See #1039.
+    if: github.repository == 'askalf/dario'
+    # Our own script on its own triggers, never PR code. dario-exec is the
+    # runner live-test.yml uses, and no login is read here: the fetch and the
+    # binary run under an empty environment with a throwaway HOME.
+    runs-on: [self-hosted, dario-exec]
+    timeout-minutes: 10
+    steps:
+      - uses: askalf/ci/actions/checkout-with-retry@19e815912eb0dc85202723bb42c0e76f4786c157 # main 2026-11-11, askalf/ci#205
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Fetch and verify npm's latest Claude Code build
+        run: |
+          set -uo pipefail
+          latest="$(npm view @anthropic-ai/claude-code dist-tags.latest 2>/dev/null || true)"
+          if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # npm not answering says nothing about the key or the script.
+            echo "::warning::npm did not name a latest Claude Code version (${latest:-no answer}); nothing was checked this run"
+            exit 0
+          fi
+          home="$(mktemp -d)"
+          dest="${RUNNER_TEMP}/claude-code-check"
+          trap 'rm -rf -- "$home" "$dest"' EXIT
+          scrubbed() { env -i PATH="$PATH" HOME="$home" "$@"; }
+          if ! fetched="$(scrubbed node scripts/cc-verified-fetch.mjs "$latest" "$dest" 2>"$home/fetch.err")"; then
+            echo "::error::Claude Code $latest could not be fetched and verified: $(head -c 200 "$home/fetch.err" | tr -d '\r\n')"
+            exit 1
+          fi
+          bin="$(scrubbed node scripts/range-bump-carrier.mjs pick-binary "$latest" "$fetched" 2>/dev/null || true)"
+          if [ -z "$bin" ]; then
+            echo "::error::the build fetched for $latest does not report that version"
+            exit 1
+          fi
+          echo "Claude Code $latest: signed by a kept registry key, sha512 as signed, unpacked ($(stat -c %s "$bin") bytes), and the binary reports $latest"
