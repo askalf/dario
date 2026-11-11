@@ -148,12 +148,19 @@ It dispatches `cc-drift-template-watch.yml` with the new version as
 `cc_version` and waits up to ten minutes for that run:
 
 - The run pins itself to a `claude` that reports exactly that version,
-  installing it when none does, and names it in `DARIO_CLAUDE_BIN`. The
+  fetching the build when none does, and names it in `DARIO_CLAUDE_BIN`. The
   runner holds more than one install (the system one, and a copy under the
   tool-cache Node), so the check, the bake and the wire-drift check are
   pointed at one binary and do not depend on `PATH` order. Only a bare
-  `x.y.z` that npm serves as `latest` is installed, and the system install is
-  never touched.
+  `x.y.z` that npm serves as `latest` is fetched, and neither install is
+  touched.
+- The build is fetched, not installed. `scripts/cc-verified-fetch.mjs`
+  downloads the platform package for the runner, accepts it only with a
+  signature of the npm registry over its name, version and sha512, made by a
+  key kept in that script, and with a tarball that has that sha512. It then
+  unpacks the one binary into the job's temp directory. No package script
+  runs on the runner. If npm rotates its signing key the fetch refuses and
+  the run goes on unpinned, until the new key is added to the script.
 - **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
   the version in `test/compat-pinned.json` and carries the release note for
   the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`
