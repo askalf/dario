@@ -1,0 +1,9 @@
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:35:05.1637240Z   Temporary failure resolving 'azure.archive.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:35:05.1637624Z   Temporary failure resolving 'archive.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:35:05.1637979Z   Temporary failure resolving 'security.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2027668Z   Temporary failure resolving 'security.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2071604Z E: Failed to fetch https://security.ubuntu.com/ubuntu/pool/universe/libl/liblzf/liblzf1_3.6-4build1_amd64v3.deb  Temporary failure resolving 'security.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2072339Z E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/universe/r/redis/redis-tools_8.0.5-1ubuntu0.1_amd64v3.deb  Temporary failure resolving 'security.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2073492Z E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/universe/r/redis/redis-server_8.0.5-1ubuntu0.1_amd64v3.deb  Temporary failure resolving 'security.ubuntu.com'
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2074021Z E: Unable to fetch some archives, maybe run apt update or try with --fix-missing?
+redis-backend	Run sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping	2026-11-11T15:38:48.2108911Z ##[error]Process completed with exit code 100.
