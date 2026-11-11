@@ -161,6 +161,9 @@ It dispatches `cc-drift-template-watch.yml` with the new version as
   unpacks the one binary into the job's temp directory. No package script
   runs on the runner. If npm rotates its signing key the fetch refuses and
   the run goes on unpinned, until the new key is added to the script.
+  `cc-verified-fetch-check.yml` runs the same fetch against npm's latest
+  build every day, and whenever the script changes, so a key that no longer
+  verifies fails that run before a new Claude Code version needs it.
 - **The shape changed (exit 2).** The rebake PR also moves `maxTested`, lists
   the version in `test/compat-pinned.json` and carries the release note for
   the bump (`rebake-release-prep.mjs --carry-range`). `cc-drift-watch.yml`

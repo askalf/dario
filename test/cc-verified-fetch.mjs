@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Tests for scripts/cc-verified-fetch.mjs and the workflow step that calls it.
+ * Tests for scripts/cc-verified-fetch.mjs, the workflow step that calls it and
+ * the daily check that runs it against the real registry.
  *
  * The template watcher pins a dispatched run to one Claude Code version. When
  * no installed binary reports it, the build is fetched and has to be proved
@@ -200,6 +201,30 @@ check('the build is fetched by the verifying script, into the job\'s own temp di
 check('the fetched binary still has to report the version before the run is pinned to it',
   pinRun.indexOf('node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$fetched"') > pinRun.indexOf('node scripts/cc-verified-fetch.mjs'));
 check('a build that cannot be verified leaves the run going, unpinned', /if ! fetched="\$\(node scripts\/cc-verified-fetch\.mjs[^\n]*\n\s*echo "::warning::[^\n]*the run is not pinned"\n\s*exit 0/.test(pinRun));
+
+header('the daily check');
+// cc-verified-fetch-check.yml is the one place the fetch meets the real registry on a schedule. It runs on a
+// self-hosted runner, so what it may be triggered by and what it may read are checked here.
+const daily = readFileSync(join(REPO, '.github', 'workflows', 'cc-verified-fetch-check.yml'), 'utf-8');
+const dailyOn = daily.slice(daily.indexOf('\non:\n'), daily.indexOf('\npermissions:\n'));
+const dailyRun = daily.split('run: |')[1] ?? '';
+check('it runs daily, on demand and when the script changes, and never on a pull request',
+  /\n  schedule:\n    - cron: '\d+ \d+ \* \* \*'/.test(dailyOn) && dailyOn.includes('\n  workflow_dispatch:\n')
+  && /\n  push:\n    branches: \[master\]\n    paths:\n      - scripts\/cc-verified-fetch\.mjs\n/.test(dailyOn) && !/pull_request/.test(daily));
+check('it is this repository\'s job only, and its token can only read',
+  daily.includes("if: github.repository == 'askalf/dario'") && /\npermissions:\n  contents: read\n\n/.test(daily) && !/: write\b/.test(daily) && !daily.includes('secrets.'));
+check('the fetch and the binary run under an empty environment with a throwaway HOME',
+  dailyRun.includes('scrubbed() { env -i PATH="$PATH" HOME="$home" "$@"; }')
+  && dailyRun.includes('scrubbed node scripts/cc-verified-fetch.mjs "$latest" "$dest"')
+  && dailyRun.includes('scrubbed node scripts/range-bump-carrier.mjs pick-binary "$latest" "$fetched"'));
+check('it installs nothing with npm, and what it unpacked is removed', dailyRun.length > 0 && !/npm (?:i|install|ci|update)\b/.test(dailyRun)
+  && dailyRun.includes(`trap 'rm -rf -- "$home" "$dest"' EXIT`));
+check('a build that cannot be verified fails the run with the script\'s reason',
+  /if ! fetched="\$\(scrubbed node scripts\/cc-verified-fetch\.mjs[^\n]*\n\s*echo "::error::[^\n]*could not be fetched and verified[^\n]*"\n\s*exit 1/.test(dailyRun));
+check('a fetched build that reports another version fails the run',
+  /if \[ -z "\$bin" \]; then\n\s*echo "::error::[^\n]*does not report that version"\n\s*exit 1/.test(dailyRun));
+check('npm not naming a version is not a failure of the key or the script',
+  /if \[\[ ! "\$latest" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n[^\n]*\n\s*echo "::warning::[^\n]*nothing was checked this run"\n\s*exit 0/.test(dailyRun));
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
