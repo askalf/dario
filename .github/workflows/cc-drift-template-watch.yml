@@ -110,16 +110,23 @@ jobs:
         #
         # The runner holds more than one install: the system /usr/bin/claude,
         # and a copy under the tool-cache Node that actions/setup-node puts
-        # first on PATH, which is where `npm i -g` lands. They can be versions
-        # apart (wire-drift-self-hosted.yml has the history). So this step does
+        # first on PATH. They can be versions apart
+        # (wire-drift-self-hosted.yml has the history). So this step does
         # not rely on PATH: it finds the binary that reports exactly the
-        # dispatched version, installing it when none does, and names it in
-        # DARIO_CLAUDE_BIN for the rest of the job. The check, the bake and the
-        # wire-drift check below then all measure that one binary. The system
-        # install is never touched.
+        # dispatched version, fetching the build when none does, and names it
+        # in DARIO_CLAUDE_BIN for the rest of the job. The check, the bake and
+        # the wire-drift check below then all measure that one binary. Neither
+        # install is touched.
         #
-        # Only a bare x.y.z that npm serves as latest is installed, so a
-        # dispatch cannot move this credentialed runner to anything else, and
+        # The build is fetched, not installed. scripts/cc-verified-fetch.mjs
+        # downloads the platform package, accepts it only with a signature of
+        # the npm registry made by a key kept in that script and with the
+        # sha512 that signature covers, and unpacks its one binary into the
+        # job's temp directory. No package script runs on this runner, which
+        # holds a login.
+        #
+        # Only a bare x.y.z that npm serves as latest is fetched, so a
+        # dispatch cannot point this credentialed runner at anything else, and
         # an install that is already past it is left alone. Never fatal: with
         # no binary pinned the run measures what is installed, the rebake
         # carries no bump unless both checks measured one version, and
@@ -150,15 +157,15 @@ jobs:
               echo "::notice::the install at $prefix_bin reports $have, past $WANTED, so nothing is installed and the run is not pinned"
               exit 0
             fi
-            echo "no installed Claude Code reports $WANTED (this prefix has ${have:-none}); installing it"
-            if ! npm i -g "@anthropic-ai/claude-code@${WANTED}" >/dev/null 2>&1; then
-              echo "::warning::npm could not install @anthropic-ai/claude-code@${WANTED}; the run is not pinned"
+            echo "no installed Claude Code reports $WANTED (this prefix has ${have:-none}); fetching the build"
+            if ! fetched="$(node scripts/cc-verified-fetch.mjs "$WANTED" "${RUNNER_TEMP}/claude-code-${WANTED}" 2>"${RUNNER_TEMP}/cc-verified-fetch.err")"; then
+              echo "::warning::Claude Code $WANTED could not be fetched and verified ($(head -c 200 "${RUNNER_TEMP}/cc-verified-fetch.err" | tr -d '\r\n')); the run is not pinned"
               exit 0
             fi
-            bin="$(pick)"
+            bin="$(node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$fetched" 2>/dev/null || true)"
           fi
           if [ -z "$bin" ]; then
-            echo "::warning::$WANTED was installed but no binary reports it; the run is not pinned"
+            echo "::warning::the build fetched for $WANTED does not report that version; the run is not pinned"
             exit 0
           fi
           echo "this run captures, bakes and checks wire drift with $bin (Claude Code $WANTED)"

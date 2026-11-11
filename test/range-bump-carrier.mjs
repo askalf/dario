@@ -270,22 +270,23 @@ header('the workflows hold the design together');
   check('the pin step runs only in a dispatched run', ifOf(pin) === "if: inputs.cc_version != ''", ifOf(pin));
   check('the input reaches the shell through the environment only', (pin ?? '').includes('WANTED: ${{ inputs.cc_version }}') && !pinRun.includes('${{'));
   const at = (needle) => pinRun.indexOf(needle);
-  const INSTALL = 'npm i -g "@anthropic-ai/claude-code@${WANTED}"';
-  const NONE_FOUND = 'if [ -z "$bin" ]; then\n            echo "::warning::$WANTED was installed but no binary reports it';
-  check('x.y.z, then npm latest, then the install: in that order',
+  const INSTALL = 'node scripts/cc-verified-fetch.mjs "$WANTED" "${RUNNER_TEMP}/claude-code-${WANTED}"';
+  const NONE_FOUND = 'if [ -z "$bin" ]; then\n            echo "::warning::the build fetched for $WANTED does not report that version';
+  check('x.y.z, then npm latest, then the verified fetch: in that order',
     at(PLAIN('WANTED')) > 0
     && at(PLAIN('WANTED')) < at('if [ "$WANTED" != "$latest" ]')
     && at('if [ "$WANTED" != "$latest" ]') < at(INSTALL));
-  check('a binary already at the version is looked for before anything is installed', at('bin="$(pick)"') > 0 && at('bin="$(pick)"') < at(INSTALL));
+  check('a binary already at the version is looked for before anything is fetched', at('bin="$(pick)"') > 0 && at('bin="$(pick)"') < at(INSTALL));
   check('the candidates are the install prefix, the system binary and PATH, chosen by the version each reports',
     pinRun.includes('node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$prefix_bin" /usr/bin/claude "$(command -v claude 2>/dev/null || true)"'));
   check('an install already past the version is left alone', at('| sort -V | tail -1)" != "$WANTED" ]') > 0 && at('| sort -V | tail -1)" != "$WANTED" ]') < at(INSTALL));
-  check('the binary is looked for again after the install', pinRun.split('bin="$(pick)"').length - 1 === 2 && pinRun.lastIndexOf('bin="$(pick)"') > at(INSTALL));
+  check('after the fetch the run is pinned only if the fetched binary reports the version', pinRun.split('bin="$(pick)"').length - 1 === 1
+    && at('bin="$(node scripts/range-bump-carrier.mjs pick-binary "$WANTED" "$fetched" 2>/dev/null || true)"') > at(INSTALL));
   check('the run is pinned only to a binary that was found',
     at(NONE_FOUND) > 0 && at('echo "DARIO_CLAUDE_BIN=$bin" >> "$GITHUB_ENV"') > at(NONE_FOUND) && pinRun.split('>> "$GITHUB_ENV"').length - 1 === 1);
   check('every refusal leaves the run going', (pinRun.match(/exit 0/g) ?? []).length === 5 && !/exit [1-9]/.test(pinRun) && !pinRun.includes('set -e'));
   check('it runs before the check that captures', template.indexOf(`- name: ${PIN}`) > 0 && template.indexOf(`- name: ${PIN}`) < template.indexOf('- name: Run drift check'));
-  check('nothing is installed over the system binary', !pinRun.includes('--prefix') && !pinRun.includes('sudo'));
+  check('nothing is installed: no npm install, no prefix, no sudo', !/npm (?:i|install)\b/.test(pinRun) && !pinRun.includes('--prefix') && !pinRun.includes('sudo'));
 
   const rangePr = stepOf(template, 'Find an open CC version PR');
   check('an open CC version PR is looked for on drift and on label drift', ifOf(rangePr) === "if: steps.check.outputs.exit_code == '2' || steps.check.outputs.exit_code == '3'", ifOf(rangePr));
