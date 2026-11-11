@@ -23,11 +23,15 @@
  *   node scripts/cc-verified-fetch.mjs <X.Y.Z> <dest dir>
  *
  * Prints the path of the unpacked `claude` binary and exits 0. Anything that
- * cannot be established (an unsupported platform, metadata that does not name
- * the package and version asked for, no valid signature from a kept key, a
- * tarball whose sha512 is not the signed one, a download or a write that
- * fails part way) exits 1 with one line on stderr and leaves nothing in the
- * destination. A usage error exits 2.
+ * cannot be established exits 1 with one line on stderr. When the arguments
+ * themselves are refused (a version that is not x.y.z, a platform with no
+ * package) nothing is touched. From the first request to the registry on (a
+ * version it does not have, metadata that does not name the package and
+ * version asked for, no valid signature from a kept key, a tarball whose
+ * sha512 is not the signed one, a download or a write that fails part way)
+ * the destination is removed, a build an earlier call left there included,
+ * so a caller never finds a binary this call did not verify. If it cannot
+ * be removed, the one line says that instead. A usage error exits 2.
  */
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -144,31 +148,39 @@ class Refusal extends Error {}
 /**
  * Fetch, verify and unpack the platform package of one Claude Code version
  * into `dest`. Resolves to the path of the binary. Rejects with a Refusal
- * carrying a fixed, one-line reason when anything cannot be established, and
- * `dest` does not exist then. `openTarball` (the file the download is written
- * to) and `maxBytes` are parameters so a failing disk and an oversized
- * download can be tested.
+ * carrying a fixed, one-line reason when anything cannot be established.
+ * A refusal of the arguments (the version, the platform, the package name)
+ * leaves `dest` as it was. Any refusal after that, from the registry's
+ * answer to the unpacking, leaves no `dest` at all: whatever an earlier call
+ * unpacked there is removed with it. When the removal itself fails, the
+ * refusal says the destination could not be removed, since something may
+ * still be there. `openTarball` (the file the download is written to),
+ * `maxBytes` and `removeDest` are parameters so a failing disk, an oversized
+ * download and a destination that cannot be removed can be tested.
  */
 export async function fetchVerified({
   version, dest, name = platformPackage(process.platform, process.arch, isMusl()), registry = REGISTRY, keys = NPM_REGISTRY_KEYS,
   fetchImpl = fetch, openTarball = createWriteStream, maxBytes = MAX_TARBALL_BYTES,
+  removeDest = (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
 }) {
   if (!isPlainVersion(version)) throw new Refusal('the version is not a bare x.y.z');
   if (!name) throw new Refusal('Claude Code ships no package for this platform');
   const docUrl = versionUrl(name, version, registry);
   if (docUrl === null) throw new Refusal('the package name is not a scoped npm name');
-  const metaRes = await fetchImpl(docUrl, { redirect: 'error', headers: { accept: 'application/json' } }).catch(() => null);
-  if (!metaRes || metaRes.status !== 200) throw new Refusal(`the registry has no ${name} at this version (HTTP ${metaRes ? metaRes.status : 'none'})`);
-  let doc;
-  try { doc = await metaRes.json(); } catch { throw new Refusal('the registry answered with something that is not JSON'); }
-  const problem = metadataProblem(doc, name, version, { registry, keys });
-  if (problem) throw new Refusal(problem);
 
-  const clear = () => rmSync(dest, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  clear();
-  mkdirSync(dest, { recursive: true });
+  // The arguments are accepted: from here on `dest` is this call's, and every refusal below removes it.
+  const clear = () => removeDest(dest);
   const tgz = join(dest, 'package.tgz');
   try {
+    const metaRes = await fetchImpl(docUrl, { redirect: 'error', headers: { accept: 'application/json' } }).catch(() => null);
+    if (!metaRes || metaRes.status !== 200) throw new Refusal(`the registry has no ${name} at this version (HTTP ${metaRes ? metaRes.status : 'none'})`);
+    let doc;
+    try { doc = await metaRes.json(); } catch { throw new Refusal('the registry answered with something that is not JSON'); }
+    const problem = metadataProblem(doc, name, version, { registry, keys });
+    if (problem) throw new Refusal(problem);
+
+    clear();
+    mkdirSync(dest, { recursive: true });
     const res = await fetchImpl(doc.dist.tarball, { redirect: 'error' }).catch(() => null);
     if (!res || res.status !== 200 || !res.body) throw new Refusal(`the tarball could not be downloaded (HTTP ${res ? res.status : 'none'})`);
     const hash = createHash('sha512');
@@ -188,20 +200,25 @@ export async function fetchVerified({
       openTarball(tgz),
     );
     if (`sha512-${hash.digest('base64')}` !== doc.dist.integrity) throw new Refusal('the tarball is not the bytes the registry signed (sha512 differs)');
-    // Only the binary is unpacked: one named member, so no other path in the archive is written.
+    // Only the binary is unpacked: one named member, so no other path in the archive is written. tar fails when
+    // the archive has no such member, and when tar itself is missing: either way there is no binary to hand on.
     const member = `package/${process.platform === 'win32' ? 'claude.exe' : 'claude'}`;
+    const bin = join(dest, ...member.split('/'));
     try {
       execFileSync('tar', ['-xzf', 'package.tgz', member], { cwd: dest, stdio: 'ignore' });
     } catch {
-      throw new Refusal('the tarball holds no claude binary where a platform package keeps it');
+      throw new Refusal('the claude binary could not be unpacked from the tarball');
     }
+    if (!existsSync(bin)) throw new Refusal('the claude binary could not be unpacked from the tarball');
     rmSync(tgz, { force: true });
-    const bin = join(dest, ...member.split('/'));
-    if (!existsSync(bin)) throw new Refusal('the tarball holds no claude binary where a platform package keeps it');
     chmodSync(bin, 0o755);
     return bin;
   } catch (err) {
-    try { clear(); } catch { /* the refusal below is what the caller needs to hear */ }
+    try {
+      clear();
+    } catch {
+      throw new Refusal('the build was not verified, and the destination could not be removed');
+    }
     throw err instanceof Refusal ? err : new Refusal('the download or the write failed before the build was verified');
   }
 }

@@ -92,6 +92,12 @@ mkdirSync(pkgDir, { recursive: true });
 for (const f of ['claude', 'claude.exe', 'other.txt']) writeFileSync(join(pkgDir, f), `the ${f} of the test package\n`);
 execFileSync('tar', ['-czf', 'pkg.tgz', 'package'], { cwd: join(tmp, 'src') });
 const tarball = readFileSync(join(tmp, 'src', 'pkg.tgz'));
+// A signed package with no binary in it, served as another version.
+mkdirSync(join(tmp, 'src2', 'package'), { recursive: true });
+writeFileSync(join(tmp, 'src2', 'package', 'other.txt'), 'no binary here\n');
+execFileSync('tar', ['-czf', 'pkg.tgz', 'package'], { cwd: join(tmp, 'src2') });
+const noBinary = readFileSync(join(tmp, 'src2', 'pkg.tgz'));
+const noBinaryIntegrity = `sha512-${createHash('sha512').update(noBinary).digest('base64')}`;
 const tarIntegrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
 let served = { tarball, signer: mine, hits: [] };
 const server = createServer((req, res) => {
@@ -101,6 +107,11 @@ const server = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ name: LINUX, version: '9.9.9', dist: { integrity: tarIntegrity, tarball: tarballUrl(LINUX, '9.9.9', base), signatures: [{ keyid: 'SHA256:test-key', sig: sigBy(served.signer, LINUX, '9.9.9', tarIntegrity) }] } }));
   }
+  if (req.url === new URL(versionUrl(LINUX, '9.9.7', base)).pathname) {
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify({ name: LINUX, version: '9.9.7', dist: { integrity: noBinaryIntegrity, tarball: tarballUrl(LINUX, '9.9.7', base), signatures: [{ keyid: 'SHA256:test-key', sig: sigBy(mine, LINUX, '9.9.7', noBinaryIntegrity) }] } }));
+  }
+  if (req.url === `/${LINUX}/-/claude-code-linux-x64-9.9.7.tgz`) return res.end(noBinary);
   if (req.url === `/${LINUX}/-/claude-code-linux-x64-9.9.9.tgz`) {
     if (!served.cut) return res.end(served.tarball);
     // A connection cut part way: the length promises the whole tarball, half of it arrives, then the socket closes.
@@ -145,6 +156,29 @@ const neverOpens = () => { const w = new Writable({ write(_c, _e, cb) { cb(); } 
 check('a file that fails before any byte is written is a refusal too', FAILED.test(await refusal({ version: '9.9.9', dest, openTarball: neverOpens })) && !existsSync(dest));
 check('a download past the size a build can have is refused part way, and nothing is left behind', /larger than a Claude Code build/.test(await refusal({ version: '9.9.9', dest, maxBytes: 16 })) && !existsSync(dest));
 check('after those failures the same call still succeeds', existsSync(await fetchVerified({ version: '9.9.9', dest, name: LINUX, registry, keys: KEYS })));
+
+// A destination that already holds a build an earlier call verified: a later refusal must not leave it there to be used.
+const again = () => fetchVerified({ version: '9.9.9', dest, name: LINUX, registry, keys: KEYS });
+const held = await again();
+check('a refusal of the arguments leaves an earlier build where it was',
+  /not a bare x\.y\.z/.test(await refusal({ version: 'latest', dest })) && /no package for this platform/.test(await refusal({ version: '9.9.9', dest, name: null }))
+  && /not a scoped npm name/.test(await refusal({ version: '9.9.9', dest, name: 'claude-code' })) && existsSync(held));
+check('a version the registry does not have removes an earlier build', /HTTP 404/.test(await refusal({ version: '9.9.8', dest })) && !existsSync(dest));
+await again();
+served = { tarball, signer: other, hits: [] };
+check('a version signed by a key that is not kept removes an earlier build, before any download', /no signature from a registry key kept/.test(await refusal({ version: '9.9.9', dest })) && !existsSync(dest) && served.hits.length === 1);
+served = { tarball, signer: mine, hits: [] };
+await again();
+check('a registry that cannot be reached removes an earlier build', /has no .* at this version \(HTTP none\)/.test(await refusal({ version: '9.9.9', dest, registry: 'http://127.0.0.1:1' })) && !existsSync(dest));
+await again();
+await again();
+check('a signed package with no binary in it is refused, and an earlier build goes with it', /^the claude binary could not be unpacked from the tarball$/.test(await refusal({ version: '9.9.7', dest })) && !existsSync(dest));
+const stuck = () => { throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }); };
+check('when the destination cannot be removed the refusal says so, whatever went wrong first',
+  /^the build was not verified, and the destination could not be removed$/.test(await refusal({ version: '9.9.8', dest, removeDest: stuck }))
+  && /^the build was not verified, and the destination could not be removed$/.test(await refusal({ version: '9.9.9', dest, removeDest: stuck, fetchImpl: async () => { throw new Error('offline'); } })));
+await again();
+check('an answer that is not JSON removes an earlier build', /not JSON/.test(await refusal({ version: '9.9.9', dest, fetchImpl: async () => new Response('<html>', { status: 200 }) })) && !existsSync(dest));
 server.close();
 rmSync(tmp, { recursive: true, force: true });
 
