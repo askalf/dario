@@ -123,8 +123,8 @@ jobs:
           runner_cc="$(claude --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
           # The runner's global CC is raised to the claimed maxTested only after a merge
           # (compat-test-self-hosted.yml, push to master), so a PR claiming a newer
-          # maxTested installs that version into this run's throwaway HOME, never
-          # globally, and the stages use that binary. The version is a bare X.Y.Z read
+          # maxTested gets that build fetched into this run's throwaway HOME, never
+          # installed, and the stages use that binary. The version is a bare X.Y.Z read
           # from the source; the package name is fixed.
           cc_fail=""
           claimed="$(grep -oE "maxTested: '[0-9]+\.[0-9]+\.[0-9]+'" src/live-fingerprint.ts | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
@@ -133,24 +133,25 @@ jobs:
             # A claim the run cannot exercise fails it: falling back to the runner's
             # older CC would pass the check on a version the PR does not claim.
             installed=""
-            # --ignore-scripts keeps every dependency's scripts off, but the wrapper's
-            # bin/claude.exe is a stub until its own postinstall (install.cjs, no network:
-            # it links the native binary out of the platform optionalDependency) runs.
-            # Run that one script explicitly.
-            if env -i PATH="$PATH" HOME="$WT_HOME" npm i --prefix "$WT_HOME/cc" --no-audit --no-fund --ignore-scripts \
-                 "@anthropic-ai/claude-code@${claimed}" > "$WT_HOME/cc-install.log" 2>&1 \
-               && (cd "$WT_HOME/cc/node_modules/@anthropic-ai/claude-code" \
-                   && env -i PATH="$PATH" HOME="$WT_HOME" node install.cjs) >> "$WT_HOME/cc-install.log" 2>&1 \
-               && [ -e "$WT_HOME/cc/node_modules/.bin/claude" ]; then
-              installed="$("$WT_HOME/cc/node_modules/.bin/claude" --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
+            # The build is fetched, not installed. scripts/cc-verified-fetch.mjs downloads
+            # the platform package, accepts it only with the npm registry's signature (made
+            # by a key kept in that script) over the sha512 the download then has to have,
+            # and unpacks its one binary. No package script runs and npm resolves nothing.
+            # The script is this PR head's copy, as is everything else this job runs. It
+            # prints the binary's path only for a build it verified.
+            fetched="$(env -i PATH="$PATH" HOME="$WT_HOME" node scripts/cc-verified-fetch.mjs "$claimed" "$WT_HOME/cc" 2> "$WT_HOME/cc-fetch.err" || true)"
+            if [ -n "$fetched" ] && [ -x "$fetched" ]; then
+              installed="$(env -i PATH="$PATH" HOME="$WT_HOME" "$fetched" --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
             fi
-            if [ "$installed" = "$claimed" ]; then
-              CC_PATH="$(readlink -f "$WT_HOME/cc/node_modules/.bin/claude")"
-              echo "runner CC ${runner_cc} is below the claimed maxTested ${claimed}: testing against ${claimed} installed in this run's HOME"
-            else
-              cc_fail="claude-code@${claimed} did not install or reports '${installed:-nothing}'"
+            if [ -n "$fetched" ] && [ "$installed" = "$claimed" ]; then
+              CC_PATH="$(readlink -f "$fetched")"
+              echo "runner CC ${runner_cc} is below the claimed maxTested ${claimed}: testing against ${claimed}, fetched and verified into this run's HOME"
+            elif [ -z "$fetched" ]; then
+              cc_fail="claude-code@${claimed} could not be fetched and verified: $(head -c 200 "$WT_HOME/cc-fetch.err" 2>/dev/null | tr -d '\r\n')"
               echo "::error::${cc_fail}; the claimed maxTested cannot be exercised"
-              tail -5 "$WT_HOME/cc-install.log" || true
+            else
+              cc_fail="the build fetched for claude-code@${claimed} reports '${installed:-nothing}'"
+              echo "::error::${cc_fail}; the claimed maxTested cannot be exercised"
             fi
           fi
           echo "CC_PATH=$CC_PATH" >> "$GITHUB_ENV"
@@ -159,8 +160,8 @@ jobs:
           report="$WT_HOME/report.txt"; : > "$report"
           fail=""
           if [ -n "$cc_fail" ]; then
-            echo "cc-install: FAIL (${cc_fail})" | tee -a "$report"
-            fail="cc-install"
+            echo "cc-fetch: FAIL (${cc_fail})" | tee -a "$report"
+            fail="cc-fetch"
           fi
           stage() {  # stage <name> <timeout-s> <cmd...>
             local name="$1" t="$2"; shift 2

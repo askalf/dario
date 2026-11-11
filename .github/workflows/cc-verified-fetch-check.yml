@@ -3,9 +3,10 @@ name: CC verified fetch check
 # scripts/cc-verified-fetch.mjs decides what counts as a Claude Code build
 # published by npm: a signature made by a registry key kept in that script.
 # cc-drift-template-watch.yml calls it only when a new Claude Code version is
-# out and the runner does not have it yet. So a signing key npm has rotated,
-# or a fault in the script, would first show there, as a dispatched run that
-# goes on unpinned with a warning.
+# out and the runner does not have it yet, and live-test.yml only for a pull
+# request that claims such a version. So a signing key npm has rotated, or a
+# fault in the script, would first show in one of those: a dispatched run
+# that goes on unpinned with a warning, or a red live-test.
 #
 # This runs the same fetch against npm's latest build every day, on demand,
 # and whenever the script changes: the registry's answer, the signature, the
