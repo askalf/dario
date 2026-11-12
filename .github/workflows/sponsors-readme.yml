@@ -32,7 +32,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@f972757106870f38be99036645f3be869aac820f # main 2026-11-11, askalf/ci#207
+      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -71,7 +71,7 @@ jobs:
       # block is derived state, so the PR carries no-changelog.
       - name: Open or refresh the PR
         if: steps.sync.outputs.changed == 'true'
-        uses: askalf/ci/actions/drift-report@f972757106870f38be99036645f3be869aac820f # main 2026-11-11, askalf/ci#207
+        uses: askalf/ci/actions/drift-report@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
         with:
           label: no-changelog
           label-color: EDEDED
