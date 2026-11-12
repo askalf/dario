@@ -178,7 +178,7 @@ npm run cch:calibrate  # re-derive the billing-tag cch seed for a new Claude Cod
 npm run readme:assets  # regenerate the diagrams and TUI screenshots (README + docs/)
 ```
 
-Two easy ways to help beyond code: **star the repo**, the clearest signal this is useful, and **file drift**: open an issue when a rate-limit header flips or a tool that worked yesterday breaks today, and it gets documented in public alongside the fix. Follow [@ask_alf](https://x.com/ask_alf) for drift bulletins as they land.
+Two easy ways to help beyond code: **star the repo**, the clearest signal this is useful, and **file drift**: open an issue when a rate-limit header flips or a tool that worked yesterday breaks today, and it gets documented in public alongside the fix.
 
 
 Everyone whose issue, pull request or audit shaped dario is credited in [CONTRIBUTORS.md](CONTRIBUTORS.md).
@@ -203,13 +203,10 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)**, o
 - **[plumbline](https://github.com/askalf/plumbline)**: own your agent oversight
 - **[amnesia](https://github.com/askalf/amnesia)**: own your search
 - **[ci](https://github.com/askalf/ci)**: own your CI · gating review in CI and [retrying checkouts](https://github.com/askalf/ci/tree/main/actions/checkout-with-retry)
-- **[askalf](https://askalf.org)**: own your operation, the AI operation that runs Sprayberry Labs
 
 ## Built by Thomas Sprayberry
 
-dario is part of **Own Your Stack**, the open toolkit behind **[Sprayberry Labs](https://sprayberrylabs.com)**, the software studio with one human on staff, run by [askalf](https://askalf.org), the AI operation these tools are part of.
-
-Built in the open, scars included. Follow the build: **[@ask_alf](https://x.com/ask_alf)**
+dario is part of **Own Your Stack**, built by Thomas Sprayberry at **[Sprayberry Labs](https://sprayberrylabs.com)**, an engineering studio that builds open-source CI tooling.
 
 ### Sponsors
 

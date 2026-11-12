@@ -238,7 +238,6 @@ function shell({ site, style, depth, title, description, canonical, body, jsonLd
 <meta property="og:image:width" content="1280">
 <meta property="og:image:height" content="640">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:site" content="@ask_alf">
 <script type="application/ld+json">${JSON.stringify(jsonLd).replace(/<\//g, '<\\/')}</script>
 <style>${css}</style>
 </head>
@@ -258,7 +257,7 @@ ${body}
 <footer>
   <div class="wrap">
     <div class="brand">d<b>a</b>rio</div>
-    <p style="margin-top:8px">The routing layer of <a href="https://github.com/askalf">Own Your Stack</a>, open tools for owning your AI infrastructure instead of renting it by the token. Built by Thomas Sprayberry at <a href="https://sprayberrylabs.com">Sprayberry Labs</a>, in the open. Follow the build: <a href="https://x.com/ask_alf">@ask_alf</a>.</p>
+    <p style="margin-top:8px">The routing layer of <a href="https://github.com/askalf">Own Your Stack</a>, open tools for owning your AI infrastructure instead of renting it by the token. Built by Thomas Sprayberry at <a href="https://sprayberrylabs.com">Sprayberry Labs</a>, in the open.</p>
     <p><a href="${rel}">dario</a>${sep}<a href="${REPO}">GitHub</a>${sep}<a href="https://www.npmjs.com/package/@askalf/dario">npm</a>${sep}<a href="${REPO}/pkgs/container/dario">GHCR</a>${sep}<a href="${rel}drift-feed/">Claude Code wire drift</a>${sep}<a href="https://github.com/sponsors/askalf">Sponsor</a></p>
     <p class="fine">dario is an independent, unofficial, third-party project. Not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, or any vendor named here. Provided as-is, no warranty. You are solely responsible for compliance with your subscription's terms, the security of your credentials, and the content you send through the proxy. <a href="${REPO}/blob/master/DISCLAIMER.md">DISCLAIMER.md</a>${sep}<a href="${REPO}/blob/master/LICENSE">MIT license</a>. Space Mono is used under the SIL Open Font License. This page loads nothing from a third party.</p>
   </div>
