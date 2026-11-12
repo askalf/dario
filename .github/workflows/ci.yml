@@ -103,8 +103,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/check-issue-close-keywords.mjs
 
+  # build, test, redis-backend and docker-inputs start beside validate-package-json, not after it.
+  # Behind it each PR paid a second runner start (about 15 s on the dario-exec rows) for a job that
+  # needs no install; every one of them is a required check, so a bad package.json still blocks the
+  # merge. What a failed validate no longer saves is the other jobs' minutes on that one PR.
   build:
-    needs: validate-package-json
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
     strategy:
@@ -131,7 +134,6 @@ jobs:
   # test (oauth-detector) skips itself when no `claude` is on PATH, which
   # is the case on a GitHub-hosted runner.
   test:
-    needs: validate-package-json
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
     steps:
@@ -146,7 +148,6 @@ jobs:
   # The fake Redis in the tests reimplements the service's Lua scripts in JS, so only a real Redis
   # runs them. Hosted because it needs a Redis to install; not a required check.
   redis-backend:
-    needs: validate-package-json
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -176,7 +177,6 @@ jobs:
   # our runner and passes only when that smoke passed or was not owed, so a PR that changes
   # none of them never waits on GitHub's queue. `build` and `test` cover the CLI itself.
   docker-inputs:
-    needs: validate-package-json
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 5
     outputs:
