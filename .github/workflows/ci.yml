@@ -104,6 +104,12 @@ jobs:
         run: node scripts/check-issue-close-keywords.mjs
 
   build:
+    # actions and pull-requests read are for the tree-tested step: it reads the merged pull
+    # request and its runs.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     needs: validate-package-json
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
@@ -112,14 +118,28 @@ jobs:
         node-version: [18, 20, 22]
     steps:
       - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      # A push to the default branch whose tree the merged pull request already tested green, with
+      # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
+      # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
+      # no push-only step, one checkout of the event's commit, nothing that moves it afterwards.
+      - id: tree
+        uses: askalf/ci/actions/tree-tested@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
+        with:
+          same-on-pull-request: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tree.outputs.tested != 'true'
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm ci
+        if: steps.tree.outputs.tested != 'true'
       - run: npm run audit
+        if: steps.tree.outputs.tested != 'true'
       - run: npm run build
+        if: steps.tree.outputs.tested != 'true'
       - run: node dist/cli.js help
+        if: steps.tree.outputs.tested != 'true'
       - run: node dist/cli.js status
+        if: steps.tree.outputs.tested != 'true'
 
   # Unit suite. `npm test` (test/all.test.mjs) fans out every test/*.mjs as
   # a node:test subtest EXCEPT the live-integration files (e2e / compat /
@@ -131,33 +151,70 @@ jobs:
   # test (oauth-detector) skips itself when no `claude` is on PATH, which
   # is the case on a GitHub-hosted runner.
   test:
+    # actions and pull-requests read are for the tree-tested step: it reads the merged pull
+    # request and its runs.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     needs: validate-package-json
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
     steps:
       - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      # A push to the default branch whose tree the merged pull request already tested green, with
+      # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
+      # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
+      # no push-only step, one checkout of the event's commit, nothing that moves it afterwards.
+      - id: tree
+        uses: askalf/ci/actions/tree-tested@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
+        with:
+          same-on-pull-request: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tree.outputs.tested != 'true'
         with:
           node-version: 22
       - run: npm ci
+        if: steps.tree.outputs.tested != 'true'
       - run: npm run build
+        if: steps.tree.outputs.tested != 'true'
       - run: npm test
+        if: steps.tree.outputs.tested != 'true'
 
   # The fake Redis in the tests reimplements the service's Lua scripts in JS, so only a real Redis
   # runs them. Hosted because it needs a Redis to install; not a required check.
   redis-backend:
+    # actions and pull-requests read are for the tree-tested step: it reads the merged pull
+    # request and its runs.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     needs: validate-package-json
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      # A push to the default branch whose tree the merged pull request already tested green, with
+      # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
+      # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
+      # no push-only step, one checkout of the event's commit, nothing that moves it afterwards.
+      - id: tree
+        uses: askalf/ci/actions/tree-tested@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
+        with:
+          same-on-pull-request: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tree.outputs.tested != 'true'
         with:
           node-version: 22
       - run: sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping
+        if: steps.tree.outputs.tested != 'true'
       - run: npm ci
+        if: steps.tree.outputs.tested != 'true'
       - run: npm run build
+        if: steps.tree.outputs.tested != 'true'
       - run: node test/shared-pending-logins.mjs && node test/account-sync.mjs
+        if: steps.tree.outputs.tested != 'true'
         env:
           DARIO_TEST_REDIS_PORT: '6379'
 
