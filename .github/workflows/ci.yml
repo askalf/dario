@@ -26,7 +26,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
       - name: package.json is valid JSON and canonically formatted
         run: node scripts/check-package-json.mjs
 
@@ -117,7 +117,7 @@ jobs:
       matrix:
         node-version: [18, 20, 22]
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
       # A push to the default branch whose tree the merged pull request already tested green, with
       # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
       # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
@@ -161,7 +161,7 @@ jobs:
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
       # A push to the default branch whose tree the merged pull request already tested green, with
       # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
       # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
@@ -194,7 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
       # A push to the default branch whose tree the merged pull request already tested green, with
       # every job, skips the steps below; anything else runs them as before (askalf/ci#209).
       # same-on-pull-request is this job's word that it runs the same on push as on a pull request:
@@ -239,7 +239,7 @@ jobs:
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
         with:
           persist-credentials: false
       - id: diff
@@ -268,7 +268,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
+      - uses: askalf/ci/actions/checkout-with-retry@ec7768cdaee0abb7085713fb25441c0be02cb12a # main 2026-11-12, askalf/ci#211
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
