@@ -18,6 +18,6 @@ jobs:
       checks: read
       statuses: write
     steps:
-      - uses: askalf/ci/actions/fleet-status@f972757106870f38be99036645f3be869aac820f # main 2026-11-11, askalf/ci#207
+      - uses: askalf/ci/actions/fleet-status@bbc8b21262aa211d499601b4222210a2686b7462 # main 2026-11-12, askalf/ci#209
         with:
           all-open: 'true'
