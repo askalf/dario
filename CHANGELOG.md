@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.11] - 2026-11-12
+
+- **Claude Code 2.1.323 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.322.
+- **The bundled template is labelled Claude Code 2.1.323.** It was labelled 2.1.322. Its `user-agent` value is `claude-cli/2.1.323 (external, sdk-cli)`.
+
 ## [6.23.10] - 2026-11-10
 
 - **Claude Desktop's third-party inference mode is refused on a Claude plan login.** Desktop's Developer → Configure Third-Party Inference → Gateway mode sends requests that dario recognised as Claude Code's own, because their identity block names the Claude Agent SDK. On a plan login it therefore forwarded the app's request, with its own tools and identity headers, on the subscription token, and the compatibility table said Desktop "should work". The mode is built for API keys, and a user who ran it this way reported account action (#1363). dario now answers such a request with a 403 (`permission_error`, `x-dario-upstream-rejection: desktop_gateway_on_plan`) before a seat is picked, with `--passthrough` as well, and sends nothing upstream. It recognises the mode by `cc_entrypoint=claude-desktop-3p` in the billing line or `claude-desktop-3p` in the user-agent. Upstream API-key mode (`ANTHROPIC_UPSTREAM_API_KEY`) forwards these requests as before. Claude Code, the Agent SDK and every other client are unaffected. [docs/account-risk.md](docs/account-risk.md#claude-desktops-third-party-inference-mode)
