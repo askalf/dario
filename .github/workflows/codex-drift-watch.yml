@@ -57,7 +57,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DARIO_CODEX_LIVE_HOME: ${{ vars.DARIO_CODEX_LIVE_HOME }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@00c95732d25ad90c842a901e52100b2993b2f4eb # main 2026-11-12, askalf/ci#213
+      - uses: askalf/ci/actions/checkout-with-retry@c2432282ae781c574dc67e252fa013a76116efa2 # main 2026-11-13, askalf/ci#215
         with:
           # master, whatever ref a dispatch names. The snapshot compared below is the baseline the PR steps
           # act on: a run dispatched on a bot/codex-models-* branch would otherwise compare the live list to
@@ -250,7 +250,7 @@ jobs:
       # PAT without Issues rights cannot replace (dario#1579).
       - name: Report
         if: ${{ !cancelled() && steps.check.outputs.exit_code != '2' && steps.check.outputs.exit_code != '3' }}
-        uses: askalf/ci/actions/drift-report@00c95732d25ad90c842a901e52100b2993b2f4eb # main 2026-11-12, askalf/ci#213
+        uses: askalf/ci/actions/drift-report@c2432282ae781c574dc67e252fa013a76116efa2 # main 2026-11-13, askalf/ci#215
         with:
           label: codex-drift
           label-description: Codex wire or model-list drift
@@ -288,7 +288,7 @@ jobs:
       - name: Report a stale client version
         id: version_report
         if: ${{ !cancelled() && steps.version_pr.outputs.report == '1' && steps.reports.outcome == 'success' }}
-        uses: askalf/ci/actions/drift-report@00c95732d25ad90c842a901e52100b2993b2f4eb # main 2026-11-12, askalf/ci#213
+        uses: askalf/ci/actions/drift-report@c2432282ae781c574dc67e252fa013a76116efa2 # main 2026-11-13, askalf/ci#215
         with:
           label: codex-client-version
           label-description: A newer Codex CLI is told about a model dario's client version is not
