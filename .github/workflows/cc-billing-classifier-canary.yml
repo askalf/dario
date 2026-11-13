@@ -105,7 +105,7 @@ jobs:
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 5
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@b4621fe1bd5bb416cc0e6861d2f8cee47b56c1e9 # main 2026-11-13, askalf/ci#217
+      - uses: askalf/ci/actions/checkout-with-retry@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
@@ -412,7 +412,7 @@ jobs:
       - name: Track the blocked canary
         if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
         id: blocked
-        uses: askalf/ci/actions/drift-report@b4621fe1bd5bb416cc0e6861d2f8cee47b56c1e9 # main 2026-11-13, askalf/ci#217
+        uses: askalf/ci/actions/drift-report@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
         with:
           label: cc-canary-blocked
           label-color: FBCA04
@@ -442,7 +442,7 @@ jobs:
       # the tracking issue closes, with its escalation clock, whichever verdict this run produced.
       - name: Close the blocked tracker
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@b4621fe1bd5bb416cc0e6861d2f8cee47b56c1e9 # main 2026-11-13, askalf/ci#217
+        uses: askalf/ci/actions/drift-report@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
         with:
           label: cc-canary-blocked
           close: true
@@ -507,7 +507,7 @@ jobs:
       # closed on the first pass.
       - name: Report
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@b4621fe1bd5bb416cc0e6861d2f8cee47b56c1e9 # main 2026-11-13, askalf/ci#217
+        uses: askalf/ci/actions/drift-report@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
         with:
           label: cc-billing-canary
           label-color: B60205
