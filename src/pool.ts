@@ -625,13 +625,9 @@ export interface PoolStatus {
 export type PoolStrategy = 'headroom' | 'headroom-by-plan' | 'fill-first' | 'expiring-first';
 
 /**
- * The weekly size of a `default_claude_max_Nx` tier where it is not N. Ultra is
- * the plan that was Max 20x until 2026-10-30. Its tier id did not change (Claude
- * Code 2.1.325 still tests for `default_claude_max_20x` to recognise the top
- * individual plan), but the 20 was its five-hour multiple: a verified Ultra
- * account has no five-hour limit, and Anthropic's pricing page puts its week at
- * 10 times Pro's, beside 5 times for Max. Counting it 20 sent an Ultra seat four
- * conversations for each one a Max seat got, with twice the week to spend.
+ * The weekly size of a `default_claude_max_Nx` tier where it is not N. Ultra's
+ * tier id is `default_claude_max_20x`, and its week is 10 times Pro's: the 20 in
+ * the id is a five-hour multiple, not the week.
  */
 const WEEKLY_SIZE_BY_TIER_MULTIPLE: Readonly<Record<number, number>> = { 20: 10 };
 
