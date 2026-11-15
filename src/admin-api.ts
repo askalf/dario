@@ -134,6 +134,8 @@ export interface AdminAccountRecord {
 export interface AdminAccountLive {
   util5h: number;
   util7d: number;
+  /** false when the seat's responses carry no five-hour window; absent until one says either way. */
+  has5hWindow?: boolean;
   /**
    * When `util5h` / `util7d` were last observed, epoch ms — or `null` if this
    * account has never served a response. The utilisation figures are a
@@ -948,6 +950,7 @@ export async function handleAdminRequest(
           ...(l ? {
             util5h: l.util5h,
             util7d: l.util7d,
+            ...(l.has5hWindow !== undefined ? { has_5h_window: l.has5hWindow } : {}),
             // The reading's age and its window's reset, so `rejected` says
             // since when and until when — the same fields GET /accounts has
             // carried since #1032 and #1232; this surface dropped them.

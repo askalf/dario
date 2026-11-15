@@ -246,5 +246,24 @@ header('the boot decision');
   check('the served page carries the marker in its head and decides by protocol first', /<head>[\s\S]*window\.DARIO_COCKPIT="served"[\s\S]*<\/head>/.test(page) && /modeFor\(location\.protocol,\s*window\.DARIO_COCKPIT\)/.test(page));
 }
 
+header('a seat with no five-hour window reads none on its card (dario#1893)');
+{
+  const ultra = M.seatWindows({ util5h: 0, util7d: 0.09, has5hWindow: false });
+  check('the five-hour row is none, with an empty meter', ultra[0].label === '5h window' && ultra[0].none === true && ultra[0].util === 0);
+  check('the weekly row is its reading', ultra[1].label === '7d window' && ultra[1].none === false && ultra[1].util === 0.09);
+  const max = M.seatWindows({ util5h: 0, util7d: 0.05, has5hWindow: true });
+  check('a seat with the window at 0% is 0% used, not none', max[0].none === false && max[0].util === 0);
+  const older = M.seatWindows({ util5h: 0.62, util7d: 0.48 });
+  check('a proxy that sends no field: the reading as before', older[0].none === false && older[0].util === 0.62 && older[1].util === 0.48);
+  check('a stale five-hour figure on a seat with no window is not drawn', M.seatWindows({ util5h: 0.4, util7d: 0.1, has5hWindow: false })[0].util === 0);
+  check('no seat and missing readings do not throw', M.seatWindows(undefined)[0].util === 0 && M.seatWindows({})[1].util === 0 && M.seatWindows(null)[0].none === false);
+  check('the card and its hover read the rows through seatWindows and write none for such a row',
+    /var wins=DarioMaths\.seatWindows\(s\); wins\.forEach\(/.test(page) && page.includes("el('b',null,u.none?'none':pct(u.util)+' used')")
+      && page.includes("value:wins[0].none?'no 5h window':pct(wins[0].util)") && !page.includes("pct(s.util5h||0)"));
+  check('the sample has a seat with no five-hour window, and the simulation leaves it so',
+    /alias:'max20', seatTier:'max_20x'[^}]*util5h:0, has5hWindow:false/.test(page) && page.includes('if(acc.has5hWindow!==false) acc.util5h='));
+  check('the plan chips read Ultra and Max', page.includes("max_20x:'Ultra',max_5x:'Max'") && !page.includes("'Max 20x'"));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

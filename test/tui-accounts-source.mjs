@@ -94,5 +94,24 @@ header('render — a parked seat shows how long it stays parked (#1244)');
   check('utilisation over 100% renders as the ratio it is', r.includes('104%'));
 }
 
+header('render: a seat with no five-hour window reads none (dario#1893)');
+{
+  const ctx = ctxWith(async () => ({
+    mode: 'pool',
+    accounts: [
+      { alias: 'ultra', expiresInMs: 3_600_000, util5h: 0, util7d: 0.09, has5hWindow: false, status: 'allowed' },
+      { alias: 'max', expiresInMs: 3_600_000, util5h: 0, util7d: 0.05, has5hWindow: true, status: 'allowed' },
+      { alias: 'older', expiresInMs: 3_600_000, util5h: 0, util7d: 0.07, status: 'allowed' },
+    ],
+  }));
+  const s = await refreshAccounts(ctx);
+  check('has5hWindow is carried through the refresh', s.accounts[0].has5hWindow === false && s.accounts[1].has5hWindow === true && s.accounts[2].has5hWindow === undefined);
+  const r = AccountsTab.render(s, DIM);
+  const row = (alias) => r.split('\n').find((l) => l.includes(alias)) ?? '';
+  check('the Ultra row reads none, then its week', /ultra\s.*\bnone\s+9%/.test(row('ultra')) && !/\b0%/.test(row('ultra')));
+  check('a seat with the window at 0% reads 0%', /max\s.*\s0%\s+5%/.test(row('max')) && !row('max').includes('none'));
+  check('a proxy that sends no field reads 0% as before', /older\s.*\s0%\s+7%/.test(row('older')) && !row('older').includes('none'));
+}
+
 console.log(`\ntui-accounts-source: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

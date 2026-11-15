@@ -35,6 +35,17 @@ export interface RateLimitSnapshot {
   util5h: number;
   util7d: number;
   /**
+   * Whether the seat has a five-hour window, as its own responses show: true
+   * when the response carried a `5h-utilization`, `5h-status` or `5h-reset`
+   * header, false when it carried one of the same three for the weekly window
+   * and none for the five-hour one, absent when it named neither window.
+   * A verified Ultra account has no five-hour limit and answers with the
+   * weekly headers alone (dario#1893). `util5h` is 0 in all three cases, so
+   * this is what tells a window the seat does not have from one it has not
+   * used.
+   */
+  has5h?: boolean;
+  /**
    * Per-model 7-day utilization buckets — Anthropic carves separate
    * weekly windows for some model families. As of 2026-04-25 the live
    * API emits `anthropic-ratelimit-unified-7d_sonnet-utilization` on
@@ -196,7 +207,12 @@ export function describeRateLimitSnapshot(rl: RateLimitSnapshot, now: number = D
   const reset = resetInMs === null ? 'no reset stated'
     : resetInMs === 0 ? 'window already rolled'
     : `resets in ${formatDurationMs(resetInMs)}`;
-  return `5h ${pct(rl.util5h)}, 7d ${pct(rl.util7d)}, claim ${rl.claim}, ${reset}`;
+  return `5h ${fiveHourText(rl)}, 7d ${pct(rl.util7d)}, claim ${rl.claim}, ${reset}`;
+}
+
+/** The five-hour figure for a listing or a log line: a percentage, or `none` for a seat with no five-hour window. */
+export function fiveHourText(rl: Pick<RateLimitSnapshot, 'util5h' | 'has5h'>): string {
+  return rl.has5h === false ? 'none' : `${Math.round(rl.util5h * 100)}%`;
 }
 
 /**
@@ -223,7 +239,7 @@ export function describeRejection(rl: RateLimitSnapshot, now: number = Date.now(
   const { resetInMs } = rateLimitWindow(rl, now);
   const stated = resetInMs === null ? 'no reset stated' : `stated reset in ${formatDurationMs(resetInMs)} not honoured`;
   const cool = Math.max(0, (rl.cooldownUntil ?? now) - now);
-  return `429 without an exhausted window (5h ${Math.round(rl.util5h * 100)}%, 7d ${Math.round(rl.util7d * 100)}%, claim ${rl.claim}; ${stated}) — cooling ${formatDurationMs(cool)}, seat stays probeable`;
+  return `429 without an exhausted window (5h ${fiveHourText(rl)}, 7d ${Math.round(rl.util7d * 100)}%, claim ${rl.claim}; ${stated}) — cooling ${formatDurationMs(cool)}, seat stays probeable`;
 }
 
 function formatDurationMs(ms: number): string {
@@ -792,6 +808,48 @@ export function withBoundBuckets(prev: RateLimitSnapshot, next: RateLimitSnapsho
   return merged ? { ...next, boundBuckets: merged } : next;
 }
 
+/**
+ * `next` with what the account already knew about its five-hour window, when
+ * `next` names no window at all (a 5xx, or a 429 with no rate-limit headers).
+ * Without it one such response would turn `5h none` back into `5h 0%` until
+ * the seat's next good answer.
+ */
+export function withKnownWindows(prev: RateLimitSnapshot, next: RateLimitSnapshot): RateLimitSnapshot {
+  return next.has5h === undefined && prev.has5h !== undefined ? { ...next, has5h: prev.has5h } : next;
+}
+
+/**
+ * The usage-limit signals on a response that dario does not act on: every
+ * `anthropic-ratelimit-unified-slow-*` and `-grace-*` header, or null when
+ * there is none. Claude Code 2.1.325 reads them for two things it can do at a
+ * limit, both asked for with `anthropic-usage-limit` on the request: `slow`,
+ * a lower-priority lane that keeps a session going on the weekly limit, and
+ * `extended`, a grace zone that lets a turn in progress finish. dario sends
+ * neither. `text` is the pairs in name order for a log line; `key` leaves
+ * the numbers out, so a line is written once per kind of signal and not once
+ * per changed retry time.
+ */
+export function usageLimitSignals(headers: Headers): { key: string; text: string } | null {
+  const prefix = 'anthropic-ratelimit-unified-';
+  const entries = (typeof headers.entries === 'function')
+    ? headers.entries()
+    : (headers as unknown as Iterable<[string, string]>);
+  const found: Array<[string, string]> = [];
+  for (const [k, v] of entries as Iterable<[string, string]>) {
+    const name = k.toLowerCase();
+    if (!name.startsWith(prefix)) continue;
+    const rest = name.slice(prefix.length);
+    if (rest.startsWith('slow-') || rest.startsWith('grace-')) found.push([rest, String(v).trim()]);
+  }
+  if (found.length === 0) return null;
+  found.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const isNumber = (v: string) => v !== '' && Number.isFinite(Number(v));
+  return {
+    key: found.map(([k, v]) => (isNumber(v) ? k : `${k}=${v}`)).join(','),
+    text: found.map(([k, v]) => `${k}=${v}`).join(', '),
+  };
+}
+
 /** Parse an Anthropic response's rate-limit headers into a snapshot. */
 export function parseRateLimits(headers: Headers, family?: string | null): RateLimitSnapshot {
   const get = (key: string) => headers.get(`anthropic-ratelimit-unified-${key}`) ?? '';
@@ -834,10 +892,16 @@ export function parseRateLimits(headers: Headers, family?: string | null): RateL
     for (const b of rejectedBuckets) if (perModel7d[b] !== undefined && !bound.includes(b)) bound.push(b);
     if (bound.length > 0) boundBuckets = { [family]: bound };
   }
+  // A header that is missing and one that is empty both read ''.
+  const sent = (key: string) => get(key).trim() !== '';
+  const has5h = ['5h-utilization', '5h-status', '5h-reset'].some(sent) ? true
+    : ['7d-utilization', '7d-status', '7d-reset'].some(sent) ? false
+      : undefined;
   return {
     status: get('status') || 'unknown',
     util5h: parseFloat(get('5h-utilization')) || 0,
     util7d: parseFloat(get('7d-utilization')) || 0,
+    ...(has5h !== undefined ? { has5h } : {}),
     reset7d: parseInt(get('7d-reset'), 10) || 0,
     perModel7d,
     overageUtil: parseFloat(get('overage-utilization')) || 0,
@@ -1643,7 +1707,8 @@ export class AccountPool {
     // A reading without the 7d-reset header does not un-learn it while it is
     // still ahead: expiring-first would otherwise send the seat to the back.
     const prevReset7d = account.rateLimit.reset7d ?? 0;
-    const next = !snapshot.reset7d && prevReset7d * 1000 > at ? { ...snapshot, reset7d: prevReset7d } : snapshot;
+    const known = withKnownWindows(account.rateLimit, snapshot);
+    const next = !known.reset7d && prevReset7d * 1000 > at ? { ...known, reset7d: prevReset7d } : known;
     account.rateLimit = withParkedBuckets(account.rateLimit, withBoundBuckets(account.rateLimit, next), at);
     account.adoptedFrom = undefined;
     account.requestCount++;
@@ -1668,7 +1733,7 @@ export class AccountPool {
     // parked a seat for 546 hours on `5h 0%, 7d 0%, claim unknown`). It cools for
     // the upstream's own `retry-after`, or a minute, and stays probeable.
     const exhausted = isWindowRejection(snapshot);
-    const merged = withBoundBuckets(account.rateLimit, snapshot);
+    const merged = withBoundBuckets(account.rateLimit, withKnownWindows(account.rateLimit, snapshot));
     // A 429 whose only exhausted reading is a per-model bucket, with the
     // seat's own windows under the threshold, parks that bucket's families
     // and nothing else (dario#1262 follow-up, 2026-09-21): a Pro seat at
@@ -1722,7 +1787,7 @@ export class AccountPool {
   adoptSnapshot(alias: string, snapshot: RateLimitSnapshot, rejected: boolean, from: string): boolean {
     const account = this.accounts.get(alias);
     if (!account) return false;
-    const merged = withBoundBuckets(account.rateLimit, snapshot);
+    const merged = withBoundBuckets(account.rateLimit, withKnownWindows(account.rateLimit, snapshot));
     account.rateLimit = rejected ? { ...merged, status: 'rejected' } : { ...merged };
     account.adoptedFrom = from;
     return true;
