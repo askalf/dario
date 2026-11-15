@@ -2485,8 +2485,9 @@ export const FULL_HELP = `
                              account pool. headroom (default) spreads
                              them to the seat with the most slack;
                              headroom-by-plan (opt-in) counts each
-                             seat's slack by plan size (Max Nx = N,
-                             Pro = 1); fill-first concentrates them on the
+                             seat's slack by the plan's weekly size
+                             (Ultra = 10, Max = 5, Pro = 1);
+                             fill-first concentrates them on the
                              alphabetically-first eligible seat until
                              it drains to the floor, then spills;
                              expiring-first does the same in order of

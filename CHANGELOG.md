@@ -13,6 +13,9 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`--pool-strategy=headroom-by-plan` counts an Ultra seat by its week.** Anthropic renamed Max 20x to Ultra on 2026-10-30: a verified Ultra account has no five-hour limit and a week 10 times Pro's, beside Max at 5 times Pro every five hours and every week. The seat's tier id is still `default_claude_max_20x`, and dario counted it 20, the old five-hour multiple, so an Ultra seat was sent four new conversations for each one a Max seat got with only twice the week to spend. It now counts 10 (Max 5, Pro 1). The other strategies read each seat's own windows and are unchanged: a seat that reports no five-hour window is measured by its week alone (#1893).
+- **The docs name the plans as Anthropic does now.** Pro, Max and Ultra in the README, the landing page, the FAQ, and the pool and two-plans pages; `docs/multi-account-pool.md` says how a pool of one Max and one Ultra seat behaves under each strategy.
+
 - **An `advisor_20260301` tool is sent with the beta it needs.** dario has forwarded the entry as declared since 6.22.2, but the API accepts it only with `advisor-tool-2026-03-01`, and the template has that flag only when the Claude Code capture it came from did: the bundled template does, a live capture from an install without the advisor does not. On such an instance the request failed with `tools.0: Input tag 'advisor_20260301' found using 'type' does not match any of the expected tags` unless the client sent the flag itself or `DARIO_PASSTHROUGH_BETAS` named it. dario now adds the flag to a request it builds from the template whenever the outbound `tools` carry an advisor entry, in the position the bundled template has it. A request with no advisor entry is unchanged, and `--passthrough` and the credits rung still send only the client's own betas (#1812).
 
 ## [6.23.12] - 2026-11-13
