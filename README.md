@@ -162,7 +162,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 289 files in parallel via test/all.test.mjs
+npm test       # 309 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
