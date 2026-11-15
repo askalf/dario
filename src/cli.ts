@@ -1358,6 +1358,8 @@ function parsePositiveIntFlag(prefix: string): number | undefined {
 export interface LiveSeat {
   alias?: string; status?: string; action?: 'none' | 'wait' | 'regrant';
   util5h?: number; util7d?: number; utilAgeMs?: number | null;
+  /** false when the seat has no five-hour window (GET /accounts, dario#1893). */
+  has5hWindow?: boolean;
   resetInMs?: number | null; requestCount?: number; rejectedCount?: number;
   organizationId?: string | null; sharesWindowWith?: string[]; grantedAt?: number | null;
   sameAccountAs?: string[]; accountId?: string | null; accountEmail?: string | null;
@@ -1391,7 +1393,7 @@ export function formatLiveAccountsListing(payload: LivePayload, port: number, no
     const alias = typeof s.alias === 'string' ? s.alias : '(unnamed)';
     const rawStatus = typeof s.status === 'string' ? s.status : 'unknown';
     const status = rawStatus === 'rejected' && typeof s.resetInMs === 'number' ? `rejected, back in ${mins(s.resetInMs)}` : rawStatus;
-    lines.push(`    ${alias.padEnd(20)} ${status.padEnd(26)} 5h ${pct(s.util5h).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
+    lines.push(`    ${alias.padEnd(20)} ${status.padEnd(26)} 5h ${(s.has5hWindow === false ? 'none' : pct(s.util5h)).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
     // The one-word next step (dario#1244): a parked seat wants nothing from
     // the operator; an auth-failure streak wants a re-grant.
     const next = s.action === 'regrant' ? 'next: re-grant this seat (dario accounts remove + add)'

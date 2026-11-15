@@ -17,7 +17,7 @@ import { stampCch, hasCchSeed } from './cch.js';
 import { rebindBodyIdentity } from './body-identity.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, usageLimitSignals, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { AccountSync, DEFAULT_ACCOUNT_SYNC_INTERVAL_MS } from './account-sync.js';
@@ -1913,6 +1913,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const mcpPassthroughLogged = new Set<string>();
   // Same de-dup contract for the note on client tools carried MCP-shaped.
   const mcpCarryLogged = new Set<string>();
+  // Seat and kind of usage-limit signal already reported (see usageLimitSignals).
+  const usageLimitSignalsLogged = new Set<string>();
   // One-shot log for the genuine-CC byte-faithful passthrough path.
   let ccPassthroughLogged = false;
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
@@ -3602,6 +3604,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             snap.set(a.alias, {
               util5h: a.rateLimit.util5h,
               util7d: a.rateLimit.util7d,
+              ...(a.rateLimit.has5h !== undefined ? { has5hWindow: a.rateLimit.has5h } : {}),
               // Same freshness fields GET /accounts exposes (#1032) — this
               // surface documents itself as reporting the same snapshot, so it
               // must not be the one place a stale reading still looks current.
@@ -3782,6 +3785,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           alias: a.alias,
           util5h: a.rateLimit.util5h,
           util7d: a.rateLimit.util7d,
+          // false: the seat has no five-hour window, so util5h 0 is not "unused"
+          // (a verified Ultra account, dario#1893). Absent until a response says.
+          ...(a.rateLimit.has5h !== undefined ? { has5hWindow: a.rateLimit.has5h } : {}),
           ...utilFreshness(a.rateLimit, now),
           // When that window rolls (dario#1244): for a rejected seat, when
           // the rejection lifts. Milliseconds, like expiresInMs.
@@ -6302,6 +6308,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           signal: upstreamAbort.signal,
         });
         upstreamHeadersAt = Date.now();
+
+        // The lower-priority lane and the grace zone Claude Code can use at a
+        // limit: dario uses neither, so say once per seat and kind of signal
+        // that the account is being offered one.
+        const limitSignals = usageLimitSignals(upstream.headers);
+        if (limitSignals) {
+          const seen = `${poolAccount?.alias ?? ''}|${limitSignals.key}`;
+          if (!usageLimitSignalsLogged.has(seen)) {
+            usageLimitSignalsLogged.add(seen);
+            console.log(`[dario] #${requestCount} ${poolAccount ? `account "${poolAccount.alias}"` : 'the upstream'} sent usage-limit signals dario does not act on: ${limitSignals.text}`);
+          }
+        }
 
         // Pool mode: capture rate-limit snapshot from the response. parseRateLimits
         // returns status='rejected' on 429, which makes the next `select()` call

@@ -109,7 +109,8 @@ and where it shows: [keys.md](./keys.md).
 `GET /admin/accounts` is the monitoring surface: each entry carries the
 persisted metadata (`alias`, `scopes`, `expires_in_ms`, the grant-age fields)
 **plus live pool status whenever pool mode is active** — `util5h` / `util7d`
-utilization with `last_observed_at` / `util_age_ms` (how old that reading is;
+utilization (`has_5h_window` is `false` on a seat with no five-hour window)
+with `last_observed_at` / `util_age_ms` (how old that reading is;
 it does not tick while a seat is parked), `reset_at` / `reset_in_ms` (when
 the window it was measured against rolls — for a `rejected` seat, when the
 rejection lifts), representative `claim` (e.g. `five_hour`), routing

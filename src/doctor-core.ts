@@ -1144,7 +1144,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       checks.push({
         status: firstOk.util5h >= 0.90 ? 'warn' : 'ok',
         label: 'Usage 5h (all)',
-        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}${reset5hStr}  •  claim=${firstOk.claim} (${bucket})`,
+        detail: `${firstOk.has5h === false ? 'none: this seat has no 5-hour window' : `${pct(firstOk.util5h)} used`}  •  status=${firstOk.status}${reset5hStr}  •  claim=${firstOk.claim} (${bucket})`,
       });
       checks.push({
         status: firstOk.util7d >= 0.90 ? 'warn' : 'ok',

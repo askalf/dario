@@ -18,7 +18,7 @@ Each request picks the account with the highest headroom:
 headroom = 1 - max(util_5h, util_7d)
 ```
 
-A seat is measured by the windows its own responses report, never by its plan name. A seat whose responses carry no five-hour reading, which is what Anthropic describes for a verified Ultra account (no 5-hour limit, a week 10 times Pro's), is measured by its weekly window alone, and the listings show its five-hour figure as 0%. A Max seat (5 times Pro, every five hours and every week) is held by whichever of its two windows is fuller. So in a pool of one Max and one Ultra seat, `fill-first` with the Max seat's alias sorting first uses every five-hour window Max gets and spends Ultra's week only on the overflow, and the default `headroom` evens the two out.
+A seat is measured by the windows its own responses report, never by its plan name. A seat whose responses carry no five-hour reading, which is what Anthropic describes for a verified Ultra account (no 5-hour limit, a week 10 times Pro's), is measured by its weekly window alone. Every listing prints `5h none` for it, and `GET /accounts` carries `has5hWindow: false` (`has_5h_window` on `GET /admin/accounts`), so a window the seat does not have is not read as one nobody has used. A Max seat (5 times Pro, every five hours and every week) is held by whichever of its two windows is fuller. So in a pool of one Max and one Ultra seat, `fill-first` with the Max seat's alias sorting first uses every five-hour window Max gets and spends Ultra's week only on the overflow, and the default `headroom` evens the two out.
 
 The response's `anthropic-ratelimit-unified-*` headers are parsed back into the pool so the next selection sees fresh utilization. An account that returns a 429 is marked `rejected` and routed around until its window resets. When every account is exhausted, requests queue for up to 60 seconds waiting for headroom to reappear. Plan tiers mix freely in the same pool — dario doesn't care about tier, only headroom.
 
@@ -161,6 +161,8 @@ spent window. Two consequences are worth knowing before you use it:
 sending the request to another provider, which means it never spends Anthropic extra usage.
 
 The proxy logs every parking as it happens, once per window: `rate limited (429) on account "spare": 5h 104%, 7d 25%, claim five_hour, resets in 37m — parked until the window rolls`. The re-probes the all-exhausted fallback makes of an already-parked seat are logged only under `-v`.
+
+Claude Code 2.1.325 can do two things at a limit that dario does not: carry on at lower priority on the weekly limit, and finish a turn already in progress inside a grace zone. Both are announced in response headers (`anthropic-ratelimit-unified-slow-*` and `anthropic-ratelimit-unified-grace-*`). dario does not use either, and when a seat's response carries one the proxy says so once per seat and kind of signal: `account "main" sent usage-limit signals dario does not act on: slow-max-wait=1200, slow-offer=treatment, slow-retry-after=20`. Routing is unchanged; the line is there so you know the account is being offered one.
 
 `dario accounts list --live` prints the same view from the running proxy — status with its countdown, the reading and its age, requests served and 429s answered, the organization, shared windows, grant age — where the plain `dario accounts list` only knows what is on disk.
 

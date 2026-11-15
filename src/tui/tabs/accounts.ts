@@ -37,6 +37,8 @@ export interface AccountsState {
     /** Live pool fields — present when sourced from the proxy's `/accounts`. */
     util5h?: number;
     util7d?: number;
+    /** false when the seat has no five-hour window. */
+    has5hWindow?: boolean;
     status?: string;
     /** Ms until the seat's rate-limit window rolls; null/absent when unknown. */
     resetInMs?: number | null;
@@ -55,6 +57,7 @@ interface AccountsEndpoint {
     expiresInMs?: number;
     util5h?: number;
     util7d?: number;
+    has5hWindow?: boolean;
     status?: string;
     resetInMs?: number | null;
   }>;
@@ -143,7 +146,7 @@ export const AccountsTab: Tab<AccountsState> = {
       const aliasCol = pad(acc.alias, 20);
       if (hasUtil) {
         const expiresCol = pad(formatExpiry(acc.expiresAt), 14);
-        const u5 = pad(acc.util5h !== undefined ? `${Math.round(acc.util5h * 100)}%` : '—', 9);
+        const u5 = pad(acc.has5hWindow === false ? 'none' : acc.util5h !== undefined ? `${Math.round(acc.util5h * 100)}%` : '—', 9);
         const u7 = pad(acc.util7d !== undefined ? `${Math.round(acc.util7d * 100)}%` : '—', 9);
         // A parked seat says for how long (dario#1244): "rejected 37m".
         const statusCol = acc.status === 'rejected' && typeof acc.resetInMs === 'number'
@@ -196,6 +199,7 @@ export async function refreshAccounts(ctx?: TabContext<AccountsState>): Promise<
             expiresAt: now + (a.expiresInMs ?? 0),
             util5h: a.util5h,
             util7d: a.util7d,
+            has5hWindow: a.has5hWindow,
             status: a.status,
             resetInMs: a.resetInMs,
           })),
