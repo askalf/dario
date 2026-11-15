@@ -549,6 +549,7 @@ export const ADVISOR_TOOL_BETA = 'advisor-tool-2026-03-01';
 export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 export const MID_CONVERSATION_TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01';
 export const INLINE_TOOLS_BETA = 'inline-tools-2026-09-15';
+export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 
 /**
  * Insert `flag` immediately AFTER the first `anchor`, deduped. If `flag` is
@@ -572,6 +573,30 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
   const without = flags.filter((f) => f !== flag);
   const i = without.indexOf(anchor);
   return i < 0 ? flags : [...without.slice(0, i), flag, ...without.slice(i)];
+}
+
+/** A `tools` entry for Anthropic's advisor tool: `type` is `advisor_<date>` (`advisor_20260301`). */
+function isAdvisorToolEntry(tool: unknown): boolean {
+  return !!tool && typeof tool === 'object' && /^advisor_[0-9]+$/.test(String((tool as { type?: unknown }).type ?? ''));
+}
+
+/**
+ * `beta` with advisor-tool-2026-03-01 when the outbound `tools` carry Anthropic's
+ * advisor tool. The API refuses that entry without the flag (`tools.0: Input tag
+ * 'advisor_20260301' found using 'type' does not match any of the expected tags`,
+ * dario#1812), and the template only has the flag when the capture it came from
+ * did: the bundle does, a live capture from an install without the advisor does
+ * not. Placed where the bundle has it: after inline-tools, or after
+ * mid-conversation-tool-changes when that is absent, or after
+ * context-management when both are, and at the end when none is there.
+ * Unchanged when the flag is already there or no entry needs it.
+ */
+export function withAdvisorToolBeta(beta: string, tools: unknown): string {
+  if (!Array.isArray(tools) || !tools.some(isAdvisorToolEntry)) return beta;
+  const flags = beta.split(',').map((s) => s.trim()).filter(Boolean);
+  if (flags.includes(ADVISOR_TOOL_BETA)) return beta;
+  const anchor = [INLINE_TOOLS_BETA, MID_CONVERSATION_TOOL_CHANGES_BETA, CONTEXT_MANAGEMENT_BETA].find((a) => flags.includes(a));
+  return (anchor ? insertBetaAfter(flags, ADVISOR_TOOL_BETA, anchor) : [...flags, ADVISOR_TOOL_BETA]).join(',');
 }
 
 /**
@@ -4220,6 +4245,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // `passthrough`, which is a startup CLI flag — conflating the two is why
     // the first version of this forwarded nothing (dario#885).
     let genuineCCRequest = false;
+    // Per-request: the outbound `tools` as sent, read once the body is final.
+    // The beta header below is built after it and needs the advisor entry.
+    let outboundTools: unknown;
     try {
       // Account selection is DEFERRED to `selectPoolAccount()` below, after the
       // provider decision (dario#1137). Selecting here meant the empty-pool 503
@@ -5972,6 +6000,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // nothing stale is shipped. Only the template-replay path is stamped —
           // passthrough / count_tokens forward the client's body (and its own
           // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
+          outboundTools = r.tools;
           let outboundText = JSON.stringify(r);
           if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
             outboundText = stampCch(outboundText, cliVersion);
@@ -6025,6 +6054,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // mirroring real CC — see betaForModel. betaWithoutContext1m still
         // strips a base-set context-1m for legacy bundles that carry it.
         beta = betaForModel(skipContext1m ? betaWithoutContext1m : betaBase, requestModel, skipContext1m);
+        // An advisor tool on the wire needs its beta whatever the template
+        // carries. Before the client's betas, so the flag sits where Claude
+        // Code puts it and the client's copy is the duplicate that is dropped;
+        // before the rejected-set strip, so an account that refused it is
+        // not sent it again.
+        beta = withAdvisorToolBeta(beta, outboundTools);
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)
