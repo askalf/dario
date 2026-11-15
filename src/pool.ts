@@ -625,16 +625,27 @@ export interface PoolStatus {
 export type PoolStrategy = 'headroom' | 'headroom-by-plan' | 'fill-first' | 'expiring-first';
 
 /**
- * How much a seat's headroom counts under `headroom-by-plan`: N for a Max Nx
- * plan (from the profile's `rate_limit_tier`, e.g. `default_claude_max_20x`),
- * 1 for Pro, and 1 for anything unrecognised or unknown, so a seat whose plan
- * dario cannot read is never favoured. Only the whole `default_claude_max_Nx`
- * tier name counts; a tier that merely contains `max_Nx` is unrecognised.
+ * The weekly size of a `default_claude_max_Nx` tier where it is not N. Ultra's
+ * tier id is `default_claude_max_20x`, and its week is 10 times Pro's: the 20 in
+ * the id is a five-hour multiple, not the week.
+ */
+const WEEKLY_SIZE_BY_TIER_MULTIPLE: Readonly<Record<number, number>> = { 20: 10 };
+
+/**
+ * How much a seat's headroom counts under `headroom-by-plan`: the plan's weekly
+ * size in Pro weeks, from the profile's `rate_limit_tier`. Max
+ * (`default_claude_max_5x`) counts 5 and Ultra (`default_claude_max_20x`) counts
+ * 10 (see WEEKLY_SIZE_BY_TIER_MULTIPLE); any other `default_claude_max_Nx`
+ * counts N. Pro counts 1, and so does anything unrecognised or unknown, so a
+ * seat whose plan dario cannot read is never favoured. Only the whole
+ * `default_claude_max_Nx` tier name counts; a tier that merely contains
+ * `max_Nx` is unrecognised.
  */
 export function planWeight(rateLimitTier: string | undefined): number {
   const m = /^default_claude_max_(\d+)x$/i.exec(rateLimitTier ?? '');
   const n = m ? Number(m[1]) : 1;
-  return Number.isFinite(n) && n >= 1 ? n : 1;
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return WEEKLY_SIZE_BY_TIER_MULTIPLE[n] ?? n;
 }
 
 /**
@@ -679,7 +690,7 @@ export function describePoolStrategy(strategy: PoolStrategy, floor: number = DEF
   const pct = `${Math.round(floor * 100)}% floor`;
   switch (strategy) {
     case 'headroom-by-plan':
-      return `headroom-by-plan: new conversations go to the seat with the most headroom counted by plan size (Max Nx counts N, Pro 1); ${pct}`;
+      return `headroom-by-plan: new conversations go to the seat with the most headroom counted by the plan's weekly size (Ultra counts 10, Max 5, Pro 1); ${pct}`;
     case 'fill-first':
       return `fill-first — new conversations fill the alphabetically-first seat until the ${pct}, then spill`;
     case 'expiring-first':
