@@ -35,7 +35,7 @@ You already pay for Claude,[^plans] for ChatGPT, or both. Each plan spends throu
 
 ```bash
 npm install -g @askalf/dario      # or: brew install askalf/tap/dario
-dario login --no-proxy   # your Claude plan (Pro, Max 5x or Max 20x); add --manual for SSH / headless
+dario login --no-proxy   # your Claude plan (Pro, Max or Ultra); add --manual for SSH / headless
 dario proxy              # leave it running, then point any tool at http://localhost:3456 with key `dario`
 ```
 
@@ -223,4 +223,4 @@ dario is funded by its users through [GitHub Sponsors](https://github.com/sponso
   <img alt="Star history of askalf/dario" src="https://api.star-history.com/svg?repos=askalf/dario&type=Date" width="100%">
 </picture>
 
-[^plans]: Pro, Max 5x or Max 20x; the current prices are on [claude.com/pricing](https://claude.com/pricing).
+[^plans]: Pro, Max or Ultra (Max and Ultra were Max 5x and Max 20x until 2026-10-30); the current prices are on [claude.com/pricing](https://claude.com/pricing).

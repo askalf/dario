@@ -69,7 +69,7 @@ dario accounts add personal
 dario proxy
 ```
 
-Pool mode activates automatically at 2+ accounts. Each request picks the account with the most headroom. Multi-turn agent sessions stick to one account so the Anthropic prompt cache survives. In-flight 429s retry on a different account before your tool sees the error. Tier mixing is fine — Pro + Max 5x + Max 20x all pool together; dario only cares about headroom percentage, not plan name.
+Pool mode activates automatically at 2+ accounts. Each request picks the account with the most headroom. Multi-turn agent sessions stick to one account so the Anthropic prompt cache survives. In-flight 429s retry on a different account before your tool sees the error. Tier mixing is fine: Pro, Max and Ultra all pool together, and dario routes on each seat's headroom, not its plan name.
 
 Full headroom math, sticky-key implementation, inspection endpoints: [`docs/multi-account-pool.md`](./multi-account-pool.md).
 
