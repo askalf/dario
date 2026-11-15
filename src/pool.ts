@@ -36,8 +36,9 @@ export interface RateLimitSnapshot {
   util7d: number;
   /**
    * Whether the seat has a five-hour window, as its own responses show: true
-   * when the response carried a `5h-*` header, false when it carried the
-   * weekly window and no `5h-*` header, absent when it named neither window.
+   * when the response carried a `5h-utilization`, `5h-status` or `5h-reset`
+   * header, false when it carried one of the same three for the weekly window
+   * and none for the five-hour one, absent when it named neither window.
    * A verified Ultra account has no five-hour limit and answers with the
    * weekly headers alone (dario#1893). `util5h` is 0 in all three cases, so
    * this is what tells a window the seat does not have from one it has not
@@ -894,7 +895,7 @@ export function parseRateLimits(headers: Headers, family?: string | null): RateL
   // A header that is missing and one that is empty both read ''.
   const sent = (key: string) => get(key).trim() !== '';
   const has5h = ['5h-utilization', '5h-status', '5h-reset'].some(sent) ? true
-    : sent('7d-utilization') ? false
+    : ['7d-utilization', '7d-status', '7d-reset'].some(sent) ? false
       : undefined;
   return {
     status: get('status') || 'unknown',

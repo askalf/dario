@@ -1,18 +1,13 @@
 #!/usr/bin/env node
 // A seat with no five-hour window says so, dario#1893.
 //
-// Anthropic renamed Max 20x to Ultra on 2026-10-30, and a verified Ultra
-// account has no five-hour limit. Read on a live pool on 2026-11-15: the Ultra
-// seat's responses carry the weekly headers and no `5h-*` header at all, with
-// `representative-claim: seven_day`; the Max seat beside it carries both
-// windows. dario read the missing header as 0, which routes correctly, and
-// printed `5h 0%`, which reads as a window nobody has used.
+// A verified Ultra account has no five-hour limit: its responses carry the
+// weekly headers and no `5h-*` header, with `representative-claim: seven_day`,
+// while a Max seat carries both windows (read on a live pool, 2026-11-15).
+// The missing header counts as 0 for routing and is printed as `none`.
 //
-// The header sets below are those two responses, with the resets moved to
-// stay ahead of the clock. Part 1 is in-process. Part 2 drives the real proxy
-// on a fake upstream and reads every surface that prints the figure, and the
-// one line dario writes when a response carries a usage-limit signal it does
-// not act on.
+// The header sets below are those two responses. Their resets are written
+// relative to now, because a reading whose reset has passed is dropped.
 
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -79,6 +74,9 @@ header('parseRateLimits: which windows the response named');
   check('no rate-limit headers: nothing is claimed either way', !('has5h' in parseRateLimits(new Headers({ 'content-type': 'application/json' }))));
   check('a status header with no window: nothing is claimed', !('has5h' in parseRateLimits(new Headers({ [`${P}status`]: 'rejected' }))));
   check('a five-hour status with no utilization still names the window', parseRateLimits(new Headers({ [`${P}5h-status`]: 'allowed', [`${P}7d-utilization`]: '0.2' })).has5h === true);
+  check('the weekly window named by its status alone: no five-hour window', parseRateLimits(new Headers({ [`${P}7d-status`]: 'allowed' })).has5h === false);
+  check('the weekly window named by its reset alone: no five-hour window', parseRateLimits(new Headers({ [`${P}7d-reset`]: soon(90) })).has5h === false);
+  check('a five-hour reset beside a weekly status names both', parseRateLimits(new Headers({ [`${P}5h-reset`]: soon(2), [`${P}7d-status`]: 'allowed' })).has5h === true);
   check('an empty five-hour header is a missing one', parseRateLimits(new Headers({ [`${P}5h-utilization`]: '', [`${P}7d-utilization`]: '0.2' })).has5h === false);
   check('the empty snapshot claims nothing', !('has5h' in EMPTY_SNAPSHOT));
 }
