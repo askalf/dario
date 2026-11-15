@@ -13,6 +13,7 @@
 
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantThresholds } from './refresh-grant.js';
 import { maskEmail } from './pool.js';
+import type { RateLimitSnapshot } from './pool.js';
 import { BAKED_BASE_MODELS, dropSuspendedModels, resolveFamilyBase } from './model-catalog.js';
 import { creditsEntries, withoutCreditsEntries } from './credits-rung.js';
 import { readFileSync } from 'node:fs';
@@ -233,6 +234,11 @@ export function failoverReadiness(input: {
     detail: `claude → ${backends[0]!} as ${plain[0]}, OpenAI path only. A Codex account would `
       + 'extend it to Anthropic-shape clients (Claude Code, agent runtimes).' + creditsNote,
   };
+}
+
+/** The `Usage 5h (all)` figure: the share used, or that the probed seat has no five-hour window (dario#1893). */
+export function usage5hText(rl: Pick<RateLimitSnapshot, 'util5h' | 'has5h'>): string {
+  return rl.has5h === false ? 'none: this seat has no 5-hour window' : `${(rl.util5h * 100).toFixed(1)}% used`;
 }
 
 /**
@@ -1144,7 +1150,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       checks.push({
         status: firstOk.util5h >= 0.90 ? 'warn' : 'ok',
         label: 'Usage 5h (all)',
-        detail: `${firstOk.has5h === false ? 'none: this seat has no 5-hour window' : `${pct(firstOk.util5h)} used`}  •  status=${firstOk.status}${reset5hStr}  •  claim=${firstOk.claim} (${bucket})`,
+        detail: `${usage5hText(firstOk)}  •  status=${firstOk.status}${reset5hStr}  •  claim=${firstOk.claim} (${bucket})`,
       });
       checks.push({
         status: firstOk.util7d >= 0.90 ? 'warn' : 'ok',

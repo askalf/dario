@@ -62,6 +62,7 @@ const {
   fiveHourText, withKnownWindows, usageLimitSignals, EMPTY_SNAPSHOT,
 } = await import('../dist/pool.js');
 const { formatLiveAccountsListing } = await import('../dist/cli.js');
+const { usage5hText } = await import('../dist/doctor-core.js');
 
 header('parseRateLimits: which windows the response named');
 {
@@ -89,6 +90,9 @@ header('what gets printed');
     fiveHourText(ultra) === 'none' && fiveHourText(max) === '0%' && fiveHourText({ util5h: 0.424 }) === '42%');
   check('the log line names it', describeRateLimitSnapshot(ultra).startsWith('5h none, 7d 9%, claim seven_day, resets in '), describeRateLimitSnapshot(ultra));
   check('the Max line is as it was', describeRateLimitSnapshot(max).startsWith('5h 0%, 7d 5%, claim five_hour, resets in '), describeRateLimitSnapshot(max));
+
+  check('doctor: its Usage 5h row says the seat has no window, and is a share otherwise',
+    usage5hText(ultra) === 'none: this seat has no 5-hour window' && usage5hText(max) === '0.0% used' && usage5hText({ util5h: 0.424 }) === '42.4% used');
 
   const listing = (seat) => formatLiveAccountsListing({ accounts: [{ alias: 'seat', status: 'allowed', util5h: 0, util7d: 0.09, utilAgeMs: 1000, ...seat }] }, 3456, Date.now()).join('\n');
   check('live listing: 5h none when the seat has no window', /seat\s+allowed\s+5h none\s+7d 9%/.test(listing({ has5hWindow: false })), listing({ has5hWindow: false }));
