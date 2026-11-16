@@ -14,6 +14,8 @@
  *     to the other one, and the proxy says so once
  *   - what the upstream reports in `input_transformations` lands in the
  *     request log, buffered and streamed, and on the console once
+ *   - under passthrough, where no sticky key exists, two conversations on
+ *     one seat are each reported once
  *
  * HOME is a temp dir and the upstream is a stub: no credentials are read and
  * nothing leaves the process.
@@ -64,6 +66,8 @@ const aliasOf = (token) => Object.entries(SEATS).find(([, s]) => s.token === tok
 // reading from the response that carries it, so a seat set to 0.99 here is
 // drained for routing only after it has served one more request.
 const util5h = { 'a-home': 0.10, 'b-other': 0.10, 'c-peer': 0.10 };
+// Seats on which the stub upstream leaves thinking out.
+let dropOn = new Set(['b-other']);
 const RESET = Math.floor(Date.now() / 1000) + 4 * 3600;
 
 const thinkingBlocksIn = (body) => (body.messages ?? [])
@@ -87,9 +91,10 @@ const fetchImpl = async (url, init) => {
   calls.push({ alias, body });
 
   // The stub upstream binds thinking to ORG_A: sent through the other
-  // organization it leaves each block out and lists it.
+  // organization it leaves each block out and lists it. `dropOn` widens that
+  // to other seats for the passthrough section.
   const sent = thinkingBlocksIn(body);
-  const transformations = alias === 'b-other'
+  const transformations = dropOn.has(alias)
     ? sent.map((_, i) => ({ type: 'thinking_dropped', path: `messages.1.content.${i}`, reason: 'organization_binding_mismatch' }))
     : [];
   const headers = {
@@ -163,8 +168,8 @@ const claudeCodeBody = (first, later, extra = {}) => ({
   ...extra,
 });
 const plainBody = (first, later) => ({ model: 'claude-sonnet-5', max_tokens: 64, messages: turns(first, later) });
-const send = async (body) => {
-  const r = await fetch(`${BASE}/v1/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const send = async (body, base = BASE) => {
+  const r = await fetch(`${base}/v1/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const text = await r.text();
   return { status: r.status, text, upstream: calls[calls.length - 1] };
 };
@@ -232,7 +237,7 @@ header('the request log');
 {
   await sleep(200);
   const lines = (await readFile(logFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.path === '/v1/messages');
-  check('one line per request', lines.length === 7, String(lines.length));
+  check('one line per request', lines.length === 8, String(lines.length));
   const withDrops = lines.filter((l) => l.thinking_dropped !== undefined);
   check('the two requests that crossed carry the count', withDrops.length === 2 && withDrops.every((l) => l.thinking_dropped === 2 && l.account === 'b-other'),
     JSON.stringify(withDrops.map((l) => [l.account, l.thinking_dropped, l.stream])));
@@ -240,7 +245,40 @@ header('the request log');
   check('with the reason the upstream gave', withDrops.every((l) => JSON.stringify(l.thinking_dropped_reasons) === JSON.stringify({ organization_binding_mismatch: 2 })),
     JSON.stringify(withDrops.map((l) => l.thinking_dropped_reasons)));
   check('a request with nothing left out carries neither field',
-    lines.filter((l) => l.thinking_dropped === undefined).every((l) => l.thinking_dropped_reasons === undefined) && lines.length - withDrops.length === 5);
+    lines.filter((l) => l.thinking_dropped === undefined).every((l) => l.thinking_dropped_reasons === undefined) && lines.length - withDrops.length === 6);
+}
+
+header('passthrough: no sticky key, and each conversation is still reported on its own');
+{
+  // A second proxy on the same seats, forwarding bodies as sent. Its pool
+  // starts unmeasured, so with every seat reporting low utilization the first
+  // seat in fill order serves every request here; the stub leaves thinking
+  // out on every seat.
+  for (const alias of Object.keys(util5h)) util5h[alias] = 0.10;
+  dropOn = new Set(Object.keys(SEATS));
+  const PASS_PORT = await freePort();
+  const PASS_BASE = `http://127.0.0.1:${PASS_PORT}`;
+  await startProxy({
+    host: '127.0.0.1', port: PASS_PORT, passthrough: true, verbose: false, noLiveCapture: true,
+    poolStrategy: 'fill-first', overageGuardEnabled: false, pacingMinMs: 0, pacingJitterMs: 0,
+    fetchImpl,
+  });
+  for (let i = 0; i < 50; i++) { try { await fetch(`${PASS_BASE}/health`); break; } catch { await sleep(100); } }
+
+  const before = dropLines().length;
+  const p1 = await send(plainBody('conversation P', true), PASS_BASE);
+  check('served, with the thinking forwarded as sent', p1.status === 200
+    && JSON.stringify(thinkingBlocksIn(p1.upstream.body)) === JSON.stringify(THINKING_TURN.slice(0, 2)), `${p1.status} ${JSON.stringify(thinkingBlocksIn(p1.upstream.body))}`);
+  check('the first conversation is reported', dropLines().length === before + 1, dropLines().slice(before).join(' | '));
+  const q1 = await send(plainBody('conversation Q', true), PASS_BASE);
+  check('a second conversation on the same seat is reported too', q1.upstream.alias === p1.upstream.alias && dropLines().length === before + 2,
+    `${p1.upstream.alias} ${q1.upstream.alias} ${dropLines().slice(before).join(' | ')}`);
+  const p2 = await send(plainBody('conversation P', true), PASS_BASE);
+  const q2 = await send(plainBody('conversation Q', true), PASS_BASE);
+  check('a later turn of either says nothing new', p2.status === 200 && q2.status === 200 && dropLines().length === before + 2, dropLines().slice(before).join(' | '));
+  const r1 = await send(plainBody('conversation R'), PASS_BASE);
+  check('a conversation with no thinking is not reported', r1.status === 200 && dropLines().length === before + 2, dropLines().slice(before).join(' | '));
+  check('no move line: nothing was rebound', moveLines().length === 1, moveLines().join(' | '));
 }
 
 out(`\nthinking-binding-proxy: ${pass} passed, ${fail} failed`);

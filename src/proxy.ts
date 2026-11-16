@@ -220,7 +220,8 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
  * Null for a body that is not a JSON object or carries no user message; those
  * requests bypass stickiness rather than sharing one bucket. Used by the two
  * codex entries that hold no parsed body of their own (the pool-exhausted
- * fallback and the mid-stream continuation target).
+ * fallback and the mid-stream continuation target), and to name the
+ * conversation in a report where routing bound no key.
  */
 function codexStickyKeyForBody(body: Buffer): string | null {
   try {
@@ -6277,11 +6278,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       let recoveryPasses = 0;
       // Say once per conversation, seat and set of reasons that the upstream
       // left thinking blocks out of a request. The request log line carries
-      // the count every time.
+      // the count every time. The conversation is the first user message's
+      // hash: the sticky key where routing bound one, and the same hash read
+      // from the request bytes where it did not (passthrough, the credits
+      // rung), so two conversations on one seat are reported separately.
       const noteThinkingDrops = (drops: ThinkingDrops | null): void => {
         if (!drops || drops.total === 0) return;
         const seat = creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias;
-        if (!thinkingDropsLogged.first(`${stickyKey ?? ''}|${seat ?? ''}|${thinkingDropsKey(drops)}`)) return;
+        const conversation = stickyKey ?? codexStickyKeyForBody(body);
+        if (!thinkingDropsLogged.first(`${conversation ?? ''}|${seat ?? ''}|${thinkingDropsKey(drops)}`)) return;
         console.log(`[dario] #${requestCount} ${describeThinkingDrops(drops, seat)}`);
       };
       // Move the request to a peer seat: auth, session header, the body's
