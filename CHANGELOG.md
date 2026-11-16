@@ -13,6 +13,13 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.15] - 2026-11-16
+
+- **Claude Code 2.1.326 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.325.
+- **The bundled `Workflow` tool definition changed.** Its input schema moved with the capture from Claude Code 2.1.326.
+- **The bundled template is labelled Claude Code 2.1.326.** It was labelled 2.1.325. Its `user-agent` value is `claude-cli/2.1.326 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+
 ## [6.23.14] - 2026-11-16
 
 - **A conversation that forwards thinking stays inside its organization when it has to change seats.** Some models bind a thinking block to the organization that produced it: sent back through a seat in another organization, the API leaves the block out and answers anyway, so the model reasons again and the prompt cache starts cold. dario forwards a genuine Claude Code client's thinking as sent (and every client's under `--passthrough`), and a sticky rebind or an in-flight 429 failover picked the next seat with no regard for that. Both now try a healthy seat of the same organization first, in the pool strategy's own order, and the rest of the pool after it. Nothing changes for a new conversation, for a seat that is still usable, for a client whose thinking is stripped, or for a pool where every seat is its own organization.
