@@ -36,13 +36,14 @@ function header(name) {
 }
 
 // Helper — add an account with an initial snapshot
-function addAccount(pool, alias, { util5h = 0, util7d = 0, rejected = false, expiresInMs = 3600_000 } = {}) {
+function addAccount(pool, alias, { util5h = 0, util7d = 0, rejected = false, expiresInMs = 3600_000, organizationId = undefined } = {}) {
   pool.add(alias, {
     accessToken: `tok-${alias}`,
     refreshToken: `ref-${alias}`,
     expiresAt: Date.now() + expiresInMs,
     deviceId: `dev-${alias}`,
     accountUuid: `uuid-${alias}`,
+    organizationId,
   });
   pool.updateRateLimits(alias, {
     ...EMPTY_SNAPSHOT,
@@ -327,6 +328,109 @@ header('size cap — LRU eviction keeps recently-used bindings over old-but-idle
   check('key 0 SURVIVED — recently used despite being created first', pool.stickyAliasFor(keys[0]) === 'alpha');
   check('key 1 EVICTED — oldest lastUsedAt', pool.stickyAliasFor(keys[1]) === null);
   check('overflow key survived (just inserted)', pool.stickyAliasFor(overflow) === 'alpha');
+}
+
+// ======================================================================
+//  keepOrganization: a rebind tries the bound seat's organization first
+// ======================================================================
+const ORG_A = 'org-aaaaaaaa';
+const ORG_B = 'org-bbbbbbbb';
+// home and peer share an organization; other has the most headroom and is in
+// another one. The conversation starts on home, and home then drains.
+function organizationPool(strategy) {
+  const pool = strategy ? new AccountPool(strategy) : new AccountPool();
+  addAccount(pool, 'home', { util5h: 0.10, expiresInMs: FAR, organizationId: ORG_A });
+  addAccount(pool, 'peer', { util5h: 0.60, expiresInMs: FAR, organizationId: ORG_A });
+  addAccount(pool, 'other', { util5h: 0.05, expiresInMs: FAR, organizationId: ORG_B });
+  return pool;
+}
+const drain = (pool, alias) => pool.updateRateLimits(alias, { ...EMPTY_SNAPSHOT, util5h: 0.99, status: 'ok', updatedAt: Date.now() });
+
+header('keepOrganization: the rebind lands on a seat of the same organization');
+{
+  const pool = organizationPool();
+  const key = computeStickyKey('a conversation that forwards its thinking');
+  pool.rebindSticky(key, 'home');
+  check('while the bound seat is usable it stays, flag or no flag',
+    pool.selectSticky(key, null, Date.now(), true)?.alias === 'home' && pool.selectSticky(key, null, Date.now(), false)?.alias === 'home');
+  drain(pool, 'home');
+  check('home drained: the same-organization seat is picked over the one with more headroom',
+    pool.selectSticky(key, null, Date.now(), true)?.alias === 'peer');
+  check('the binding follows', pool.stickyAliasFor(key) === 'peer');
+}
+
+header('keepOrganization off: the rebind is the pool\'s ordinary pick');
+{
+  const pool = organizationPool();
+  const key = computeStickyKey('a conversation whose thinking is stripped');
+  pool.rebindSticky(key, 'home');
+  drain(pool, 'home');
+  check('max headroom wins, whatever the organization', pool.selectSticky(key, null, Date.now())?.alias === 'other');
+}
+
+header('keepOrganization: no usable seat in the organization falls back to the whole pool');
+{
+  const drained = organizationPool();
+  const k1 = computeStickyKey('peer is drained too');
+  drained.rebindSticky(k1, 'home');
+  drain(drained, 'home');
+  drain(drained, 'peer');
+  check('peer at the floor: the other organization serves', drained.selectSticky(k1, null, Date.now(), true)?.alias === 'other');
+
+  const rejected = organizationPool();
+  const k2 = computeStickyKey('peer is rejected');
+  rejected.rebindSticky(k2, 'home');
+  drain(rejected, 'home');
+  rejected.markRejected('peer', { ...EMPTY_SNAPSHOT, util5h: 1, status: 'rejected', updatedAt: Date.now() });
+  check('peer rejected: the other organization serves', rejected.selectSticky(k2, null, Date.now(), true)?.alias === 'other');
+
+  const unknown = new AccountPool();
+  addAccount(unknown, 'home', { util5h: 0.10, expiresInMs: FAR });
+  addAccount(unknown, 'peer', { util5h: 0.60, expiresInMs: FAR, organizationId: ORG_A });
+  addAccount(unknown, 'other', { util5h: 0.05, expiresInMs: FAR, organizationId: ORG_B });
+  const k3 = computeStickyKey('the bound seat has no organization on record');
+  unknown.rebindSticky(k3, 'home');
+  drain(unknown, 'home');
+  check('organization not known: the ordinary pick', unknown.selectSticky(k3, null, Date.now(), true)?.alias === 'other');
+
+  const gone = organizationPool();
+  const k4 = computeStickyKey('the bound seat left the pool');
+  gone.rebindSticky(k4, 'home');
+  gone.remove('home');
+  check('bound seat removed: the ordinary pick', gone.selectSticky(k4, null, Date.now(), true)?.alias === 'other');
+}
+
+header('keepOrganization: a new conversation has no organization to keep');
+{
+  const pool = organizationPool();
+  const key = computeStickyKey('first turn');
+  check('binds by headroom', pool.selectSticky(key, null, Date.now(), true)?.alias === 'other');
+}
+
+header('keepOrganization: same-organization seats are ordered by the pool strategy');
+{
+  const pool = new AccountPool('fill-first');
+  addAccount(pool, 'a-home', { util5h: 0.10, expiresInMs: FAR, organizationId: ORG_A });
+  addAccount(pool, 'b-other', { util5h: 0.10, expiresInMs: FAR, organizationId: ORG_B });
+  addAccount(pool, 'd-peer', { util5h: 0.10, expiresInMs: FAR, organizationId: ORG_A });
+  addAccount(pool, 'c-peer', { util5h: 0.40, expiresInMs: FAR, organizationId: ORG_A });
+  const kept = computeStickyKey('fill-first, thinking forwarded');
+  const plain = computeStickyKey('fill-first, thinking stripped');
+  pool.rebindSticky(kept, 'a-home');
+  pool.rebindSticky(plain, 'a-home');
+  drain(pool, 'a-home');
+  check('fill order without the flag: the next alias, in another organization', pool.selectSticky(plain, null, Date.now())?.alias === 'b-other');
+  check('fill order with the flag: the next alias of the same organization', pool.selectSticky(kept, null, Date.now(), true)?.alias === 'c-peer');
+}
+
+header('selectExcluding: keepOrganizationOf prefers the leaving seat\'s organization');
+{
+  const pool = organizationPool();
+  check('without it: max headroom among the rest', pool.selectExcluding(new Set(['home']))?.alias === 'other');
+  check('with it: the same-organization seat', pool.selectExcluding(new Set(['home']), null, 'home')?.alias === 'peer');
+  check('a tried seat is not offered again', pool.selectExcluding(new Set(['home', 'peer']), null, 'home')?.alias === 'other');
+  check('an alias the pool does not hold changes nothing', pool.selectExcluding(new Set(['home']), null, 'nobody')?.alias === 'other');
+  check('nobody left is still null', pool.selectExcluding(new Set(['home', 'peer', 'other']), null, 'home') === null);
 }
 
 // ======================================================================

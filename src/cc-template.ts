@@ -2044,9 +2044,13 @@ export function buildCCRequest(
   const effectiveMergeTools = Boolean(opts.mergeTools) && !effectivePreserveTools && !opts.hybridTools;
 
   // ── Strip thinking from history ──
+  // Both kinds go together. The API accepts a history with every thinking
+  // block left out, and can refuse one where a run of a turn's thinking
+  // blocks is sent with some of them missing, so a `redacted_thinking` block
+  // must not outlive the `thinking` blocks around it.
   for (const msg of messages) {
     if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-      msg.content = (msg.content as Array<{ type: string }>).filter(b => b.type !== 'thinking');
+      msg.content = (msg.content as Array<{ type: string }>).filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking');
     }
     // Strip cache_control from message blocks
     if (Array.isArray(msg.content)) {

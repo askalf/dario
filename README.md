@@ -19,7 +19,7 @@
 
 <p>In plain words: dario is a proxy you run on your own machine that answers your coding tools' API requests with the plans you already pay for. Each Claude or ChatGPT plan account it holds is a <em>seat</em>.</p>
 
-<sub><code>npm i -g @askalf/dario</code> or <code>brew install askalf/tap/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~45k lines of TypeScript across 88 files · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> or <code>brew install askalf/tap/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~46k lines of TypeScript across 92 files · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#why-people-pick-it">Why dario</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#reference">Reference</a> · <a href="#trust--transparency">Trust</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -127,11 +127,11 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 
 | Signal | Status |
 |---|---|
-| Source | **~45k** lines of TypeScript across **88** files. One credential path since v5: the pool. |
+| Source | **~46k** lines of TypeScript across **92** files. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) badge above and the [Best Practices](https://www.bestpractices.dev/projects/13638) entry are live |
-| Tests | **309 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Tests | **311 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY`; refuses cross-origin and DNS-rebound browser requests |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
@@ -162,7 +162,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 309 files in parallel via test/all.test.mjs
+npm test       # 311 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 

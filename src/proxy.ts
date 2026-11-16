@@ -64,6 +64,7 @@ import { codexUsageView, resolveCodexUsagePollMs } from './codex-usage.js';
 import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
+import { OncePerKey, describeThinkingDrops, historyCarriesThinking, seatMoveNote, thinkingDropLogFields, thinkingDropsFrom, thinkingDropsKey, type ThinkingDrops } from './thinking-binding.js';
 import { ACCOUNT_KEY_CREDITS, creditsBeforePlain, creditsEntries, creditsFallbackMarker, creditsHeaders, describeCreditsRung, pickCreditsTarget, withoutCreditsEntries } from './credits-rung.js';
 import { parseFamilyFallback, familyFallbackModel, describeFamilyFallback, type FamilyFallbackMap } from './family-fallback.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
@@ -1548,6 +1549,9 @@ export interface ProxyLogEntry {
   client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
   preserve_tools?: boolean;
   stream?: boolean;
+  /** Thinking blocks the upstream said it left out of this request, and why (see thinking-binding.ts). Present when there were any. */
+  thinking_dropped?: number;
+  thinking_dropped_reasons?: Record<string, number>;
   /** Mid-stream continuation outcome, when this request's guard acted (see analytics RequestContinuation). */
   continued?: 'continued' | 'continued-unfinished' | 'resume-failed' | 'no-target';
   continued_by?: string;
@@ -1915,6 +1919,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const mcpCarryLogged = new Set<string>();
   // Seat and kind of usage-limit signal already reported (see usageLimitSignals).
   const usageLimitSignalsLogged = new Set<string>();
+  // Conversation, seat and reasons already reported as thinking the upstream
+  // left out. A conversation that keeps sending the same blocks gets the same
+  // answer on every turn, and one line says it.
+  const thinkingDropsLogged = new OncePerKey();
   // One-shot log for the genuine-CC byte-faithful passthrough path.
   let ccPassthroughLogged = false;
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
@@ -5646,6 +5654,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // selection toward one we already paid cache cost on — passthrough
       // users aren't doing template replay anyway).
       let stickyKey: string | null = null;
+      // True when this request forwards thinking blocks upstream as the client
+      // sent them: a genuine Claude Code body, or any body in passthrough
+      // mode, with thinking in its history. Every other client's thinking is
+      // stripped by the template build, so a seat change costs it nothing.
+      let forwardsThinking = false;
+      // One line when the conversation lands on a seat in another organization
+      // while forwarding thinking (see seatMoveNote for when that is silent).
+      const noteSeatMove = (from: PoolAccount | undefined, to: PoolAccount): void => {
+        if (!from) return;
+        const note = seatMoveNote({
+          fromAlias: from.alias, fromOrganization: from.organizationId,
+          toAlias: to.alias, toOrganization: to.organizationId,
+          carriesThinking: forwardsThinking,
+        });
+        if (note) console.log(`[dario] #${requestCount} ${note}`);
+      };
       // Outbound session id resolved once — either inside the template build
       // (so body metadata matches) or below for passthrough (no body build).
       let preBodySessionId: string | undefined;
@@ -5742,6 +5766,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }));
             return;
           }
+          forwardsThinking = !isCountTokens && (passthrough || isGenuineCCClient(r)) && historyCarriesThinking(r.messages);
           // In passthrough mode, skip all Claude-specific injection — OAuth swap only.
           // count_tokens also forwards thin (see resolveProxyTarget) — the endpoint
           // counts the CLIENT's own prompt, so template injection would distort it.
@@ -5791,8 +5816,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 const peerAlias = await poolSync.lookupSticky(stickyKey);
                 if (peerAlias) pool.rebindSticky(stickyKey, peerAlias);
               }
-              const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
+              const boundAlias = pool.stickyAliasFor(stickyKey);
+              const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel), Date.now(), forwardsThinking);
               if (poolSync && preferred && !hadLocalBinding) poolSync.bindSticky(stickyKey, preferred.alias);
+              if (preferred && boundAlias) noteSeatMove(pool.get(boundAlias), preferred);
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
                 accessToken = preferred.accessToken;
@@ -6248,6 +6275,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // combination with headroom -- opus-4-1 needs 2.
       const MAX_RECOVERY_PASSES = 4;
       let recoveryPasses = 0;
+      // Say once per conversation, seat and set of reasons that the upstream
+      // left thinking blocks out of a request. The request log line carries
+      // the count every time.
+      const noteThinkingDrops = (drops: ThinkingDrops | null): void => {
+        if (!drops || drops.total === 0) return;
+        const seat = creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias;
+        if (!thinkingDropsLogged.first(`${stickyKey ?? ''}|${seat ?? ''}|${thinkingDropsKey(drops)}`)) return;
+        console.log(`[dario] #${requestCount} ${describeThinkingDrops(drops, seat)}`);
+      };
       // Move the request to a peer seat: auth, session header, the body's
       // metadata.user_id and the sticky binding all name `next`. The session
       // id is resolved once so the header and the body carry the same value
@@ -6255,6 +6291,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // account_uuid are next's, not the rejected seat's. A body dario did not
       // build (passthrough, count_tokens) is the client's and is left alone.
       const switchAccount = (next: PoolAccount): void => {
+        noteSeatMove(poolAccount ?? undefined, next);
         triedAliases.add(next.alias);
         poolAccount = next;
         accessToken = next.accessToken;
@@ -6619,7 +6656,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
           if (poolAccount) {
-            const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
+            const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel), forwardsThinking ? poolAccount.alias : undefined);
             if (nextAccount) {
               switchAccount(nextAccount);
               peekedBody = null;
@@ -6732,7 +6769,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (verbose) {
           console.error(`[dario] auth failure (${upstream.status}) on account "${poolAccount.alias}" — placing in cool-down and attempting failover`);
         }
-        const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
+        const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel), forwardsThinking ? poolAccount.alias : undefined);
         if (nextAccount) {
           switchAccount(nextAccount);
           continue dispatchLoop;
@@ -6760,7 +6797,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (upstream.status === 429) {
         // Try pool failover before surfacing to client
         if (poolAccount) {
-          const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
+          const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel), forwardsThinking ? poolAccount.alias : undefined);
           if (nextAccount) {
             switchAccount(nextAccount);
             continue dispatchLoop;
@@ -6922,6 +6959,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // The billed count from message_delta's usage.output_tokens_details,
         // when upstream sends it; the chars/4 estimate above is the fallback.
         let streamThinkingTokens: number | undefined;
+        // What the upstream said it left out of the request. message_start
+        // carries it; a later message_delta that carries it again replaces it.
+        let streamThinkingDrops: ThinkingDrops | null = null;
         const analyticsDecoder = analytics ? new TextDecoder() : null;
         let analyticsBuffer = '';
 
@@ -7012,6 +7052,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 try {
                   const e = JSON.parse(dataLine.slice(6)) as Record<string, unknown>;
                   if (e.type === 'message_start') {
+                    streamThinkingDrops = thinkingDropsFrom(e.message) ?? streamThinkingDrops;
                     const u = (e.message as { usage?: Record<string, number> } | undefined)?.usage;
                     if (u) {
                       streamInputTokens = u.input_tokens ?? 0;
@@ -7020,6 +7061,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                       streamCacheCreate1hTokens = cacheCreate1hFromUsage(u);
                     }
                   } else if (e.type === 'message_delta') {
+                    streamThinkingDrops = thinkingDropsFrom(e) ?? streamThinkingDrops;
                     const u = (e as { usage?: Record<string, number> }).usage;
                     if (u?.output_tokens) streamOutputTokens = u.output_tokens;
                     const billedThinking = thinkingTokensFromUsage(u);
@@ -7137,10 +7179,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
           stream: true,
+          ...thinkingDropLogFields(streamThinkingDrops),
           ...(guard?.outcome ? { continued: guard.outcome, continued_by: guard.continuedBy ?? undefined, continued_after: guard.partialChars } : {}),
           ...continuationLeg,
         });
 
+        noteThinkingDrops(streamThinkingDrops);
         if (verbose) console.log(formatUsageLogLine(requestCount, {
           inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
           cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
@@ -7170,8 +7214,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
 
         let bufferedUsage: ReturnType<typeof Analytics.parseUsage> | null = null;
+        let bufferedThinkingDrops: ThinkingDrops | null = null;
         try {
           const parsed = JSON.parse(responseBody) as Record<string, unknown>;
+          bufferedThinkingDrops = thinkingDropsFrom(parsed);
           bufferedUsage = Analytics.parseUsage(parsed);
         } catch { /* malformed body — log without usage */ }
 
@@ -7216,8 +7262,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
           stream: false,
+          ...thinkingDropLogFields(bufferedThinkingDrops),
         });
 
+        noteThinkingDrops(bufferedThinkingDrops);
         if (verbose && bufferedUsage) console.log(formatUsageLogLine(requestCount, bufferedUsage, consumer));
         if (verbose) console.log(`[dario] #${requestCount} ${upstream.status}`);
       }

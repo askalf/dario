@@ -1113,6 +1113,7 @@ interface StickyBinding {
 const STICKY_IDLE_TTL_MS = 6 * 60 * 60 * 1000; // reap a binding 6h after its LAST use, not its creation
 const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
 const STICKY_CLEANUP_INTERVAL_MS = 30_000; // amortize the O(n) TTL/orphan sweep
+const NO_ALIASES: ReadonlySet<string> = new Set();
 
 /**
  * Default headroom floor under which an account is treated as "effectively
@@ -1483,21 +1484,7 @@ export class AccountPool {
       isAccountEligible(a, now, family),
     );
 
-    if (eligible.length > 0) {
-      if (this.strategy === 'fill-first' || this.strategy === 'expiring-first') {
-        const first = this.strategy === 'fill-first'
-          ? pickFillFirst(eligible, family, this.headroomFloor)
-          : pickExpiringFirst(eligible, family, this.headroomFloor, now);
-        if (first) return first;
-      }
-      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family, this.strategy === 'headroom-by-plan');
-      const aboveFloor = eligible.filter(a =>
-        isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
-      );
-      return aboveFloor.length > 0
-        ? pickMaxHeadroom(aboveFloor, family, this.strategy === 'headroom-by-plan')
-        : pickFloorProbe(eligible, family, this.headroomFloor, now);
-    }
+    if (eligible.length > 0) return this.pickEligible(eligible, family, now);
 
     // No seat is eligible. A seat parked inside a live window is not
     // re-probed: its 429 named the reset, the clock has not reached it, and a
@@ -1571,9 +1558,14 @@ export class AccountPool {
    * starts building its own cache for this conversation from turn 1 of
    * the rebind.
    *
+   * `keepOrganization` is set for a conversation that forwards thinking its
+   * seat produced: a rebind then tries a seat of the same organization
+   * before the rest of the pool (see organizationPeer). It changes nothing
+   * while the bound seat is still usable, and nothing for a new conversation.
+   *
    * Also performs lazy cleanup of expired bindings (TTL or size cap).
    */
-  selectSticky(stickyKey: string | null, family?: string | null, now: number = Date.now()): PoolAccount | null {
+  selectSticky(stickyKey: string | null, family?: string | null, now: number = Date.now(), keepOrganization: boolean = false): PoolAccount | null {
     if (!stickyKey) return this.select(family);
     this.cleanupSticky(now);
 
@@ -1592,7 +1584,8 @@ export class AccountPool {
       }
     }
 
-    const picked = this.select(family);
+    const picked = (keepOrganization && binding ? this.organizationPeer(binding.alias, NO_ALIASES, family, now) : null)
+      ?? this.select(family);
     if (picked) {
       this.sticky.set(stickyKey, { alias: picked.alias, boundAt: now, lastUsedAt: now });
     }
@@ -1657,36 +1650,76 @@ export class AccountPool {
     return this.sticky.get(stickyKey)?.alias ?? null;
   }
 
-  /** Select the next-best account, excluding the given set of aliases. */
-  selectExcluding(excluded: Set<string>, family?: string | null): PoolAccount | null {
+  /**
+   * The strategy's pick among seats already known to be eligible. Fill-first
+   * and expiring-first keep their order here too, so a failover lands on the
+   * next seat in line rather than the max-headroom one and the concentration
+   * the strategy exists to provide survives it. Null when the strategy and
+   * the floor leave no seat worth a request.
+   */
+  private pickEligible(eligible: PoolAccount[], family: string | null | undefined, now: number): PoolAccount | null {
+    if (this.strategy === 'fill-first' || this.strategy === 'expiring-first') {
+      const first = this.strategy === 'fill-first'
+        ? pickFillFirst(eligible, family, this.headroomFloor)
+        : pickExpiringFirst(eligible, family, this.headroomFloor, now);
+      if (first) return first;
+    }
+    if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family, this.strategy === 'headroom-by-plan');
+    const aboveFloor = eligible.filter(a =>
+      isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
+    );
+    return aboveFloor.length > 0
+      ? pickMaxHeadroom(aboveFloor, family, this.strategy === 'headroom-by-plan')
+      : pickFloorProbe(eligible, family, this.headroomFloor, now);
+  }
+
+  /**
+   * A usable seat in the same organization as `alias`, picked by the pool's
+   * strategy. A thinking block can be bound to the organization that produced
+   * it, so a conversation that has to leave its seat keeps its earlier
+   * reasoning only on a seat of that organization. Null when the
+   * organization is not known, or when none of its other seats is eligible
+   * and above the headroom floor; the caller then picks from the whole pool.
+   */
+  private organizationPeer(
+    alias: string,
+    excluded: ReadonlySet<string>,
+    family: string | null | undefined,
+    now: number,
+  ): PoolAccount | null {
+    const organizationId = this.accounts.get(alias)?.organizationId;
+    if (!organizationId) return null;
+    const peers = [...this.accounts.values()].filter(a =>
+      a.alias !== alias
+      && !excluded.has(a.alias)
+      && a.organizationId === organizationId
+      && isAccountEligible(a, now, family)
+      && isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
+    );
+    return peers.length > 0 ? this.pickEligible(peers, family, now) : null;
+  }
+
+  /**
+   * Select the next-best account, excluding the given set of aliases.
+   * `keepOrganizationOf` names the seat the request is leaving when it
+   * forwards thinking that seat produced: a seat of the same organization is
+   * then tried before the rest of the pool (see organizationPeer).
+   */
+  selectExcluding(excluded: Set<string>, family?: string | null, keepOrganizationOf?: string): PoolAccount | null {
     if (this.accounts.size <= 1) return null;
 
     const now = Date.now();
+    if (keepOrganizationOf) {
+      const peer = this.organizationPeer(keepOrganizationOf, excluded, family, now);
+      if (peer) return peer;
+    }
     const candidates = [...this.accounts.values()].filter(a => !excluded.has(a.alias));
 
     const eligible = candidates.filter(a =>
       isAccountEligible(a, now, family),
     );
 
-    if (eligible.length > 0) {
-      // Fill-first failover keeps the fill order: the next account tried
-      // after a 429 is the next alias in line, not the max-headroom seat —
-      // otherwise a single failover would defeat the concentration the
-      // strategy exists to provide.
-      if (this.strategy === 'fill-first' || this.strategy === 'expiring-first') {
-        const first = this.strategy === 'fill-first'
-          ? pickFillFirst(eligible, family, this.headroomFloor)
-          : pickExpiringFirst(eligible, family, this.headroomFloor, now);
-        if (first) return first;
-      }
-      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family, this.strategy === 'headroom-by-plan');
-      const aboveFloor = eligible.filter(a =>
-        isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
-      );
-      return aboveFloor.length > 0
-        ? pickMaxHeadroom(aboveFloor, family, this.strategy === 'headroom-by-plan')
-        : pickFloorProbe(eligible, family, this.headroomFloor, now);
-    }
+    if (eligible.length > 0) return this.pickEligible(eligible, family, now);
 
     // Mid-flight: the seats a 429 could still hand this request to. A seat
     // parked inside a live window is not one of them — on the dario#1244
