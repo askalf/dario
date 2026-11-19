@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **gpt-6.2-astra and gpt-6.2-sol are priced at their published rates.** The ChatGPT backend now lists both. Without rows of their own, `dario usage`, `/analytics` and the ledger would have costed them at gpt-5.6-terra's $2/$12 per million tokens. gpt-6.2-astra is $8/$40 and gpt-6.2-sol is $2/$10, each with cache reads at 0.05x input and cache writes at 1.25x input.
+
 ## [6.23.17] - 2026-11-19
 
 - **Claude Code 2.1.328 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.327.

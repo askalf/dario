@@ -63,6 +63,15 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
     terra61.input === 1 && terra61.output === 5 && terra61.cacheRead === 0.05 && terra61.cacheCreate === 1.25, JSON.stringify(terra61));
   check('the 6.1 pair is not read as the 6 pair or the 5.6 one: the dot is part of the id',
     JSON.stringify(sol61) !== JSON.stringify(sol) && JSON.stringify(terra61) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra']));
+  const astra62 = pricingRateFor('gpt-6.2-astra:high', T);
+  const sol62 = pricingRateFor('gpt-6.2-sol', T);
+  check('gpt-6.2-astra has its own published rate ($8 in / $40 out, $0.40 cached, $10 cache write), effort suffix or not',
+    astra62.input === 8 && astra62.output === 40 && astra62.cacheRead === 0.4 && astra62.cacheCreate === 10, JSON.stringify(astra62));
+  check('gpt-6.2-sol has its own published rate ($2 in / $10 out, $0.10 cached, $2.50 cache write)',
+    sol62.input === 2 && sol62.output === 10 && sol62.cacheRead === 0.1 && sol62.cacheCreate === 2.5, JSON.stringify(sol62));
+  check('the 6.2 pair has rows of its own, not gpt-6-astra\'s or the terra fallback',
+    Object.hasOwn(OPENAI_PRICING, 'gpt-6.2-astra') && Object.hasOwn(OPENAI_PRICING, 'gpt-6.2-sol')
+    && JSON.stringify(astra62) !== JSON.stringify(pricingRateFor('gpt-6-astra', T)));
   const lunaCost = costOfTokens('gpt-6-luna', T, { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 0, cacheCreateTokens: 0 });
   check('costOfTokens: 1M in + 1M out on gpt-6-luna = $0.60', Math.abs(lunaCost - 0.6) < 1e-9, lunaCost);
   const c = costOfTokens('claude-opus-5', T, { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
