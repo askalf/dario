@@ -13,6 +13,13 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.17] - 2026-11-19
+
+- **Claude Code 2.1.328 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.327.
+- **The bundled `ListAgents` and `ReportFindings` tool definitions changed.** With the capture from Claude Code 2.1.328: `ListAgents` (description) and `ReportFindings` (input schema).
+- **The bundled template is labelled Claude Code 2.1.328.** It was labelled 2.1.327. Its `user-agent` value is `claude-cli/2.1.328 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+
 ## [6.23.16] - 2026-11-18
 
 - **Claude Code 2.1.327 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.326.
