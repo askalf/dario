@@ -37,6 +37,14 @@
       "visibility": "list"
     },
     {
+      "slug": "gpt-6.2-astra",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-6.2-sol",
+      "visibility": "list"
+    },
+    {
       "slug": "gpt-reserve",
       "visibility": "hide"
     }

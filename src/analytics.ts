@@ -474,10 +474,12 @@ export const PRICING: Record<string, PricingEntry> = {
  * rate for a model Anthropic does not sell.
  */
 export const OPENAI_PRICING: Record<string, BaseRate> = {
+  // The 6.1 and 6.2 rows read their cache at 0.05x input, where every other
+  // row here is 0.1x. Unlisted, the 6.1 pair took gpt-5.6-terra's $2/$12:
+  // twice gpt-6.1-terra's input price and over twice its output price.
+  'gpt-6.2-astra': { input: 8, output: 40, cacheRead: 0.4, cacheCreate: 10 },
+  'gpt-6.2-sol': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5 },
   'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
-  // The 6.1 pair reads its cache at 0.05x input, where every other row here
-  // is 0.1x. Unlisted, both took gpt-5.6-terra's $2/$12: twice gpt-6.1-terra's
-  // input price and over twice its output price.
   'gpt-6.1-sol': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5 },
   'gpt-6.1-terra': { input: 1, output: 5, cacheRead: 0.05, cacheCreate: 1.25 },
   'gpt-6-sol': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
