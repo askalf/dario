@@ -30,12 +30,14 @@ on its next request, no restart.
 | Option | Effect |
 |---|---|
 | `--seat=<alias>` | The pool seat this key's traffic prefers. Taken whenever that seat is eligible right now; when it is parked on a 429, cooling down after an auth failure, or missing, the request routes like any other. A preference, not a pin: in-flight failover is unchanged, and the sticky binding follows the key so a conversation stays on the developer's own subscription. |
-| `--models=a,b,prefix*` | An allowlist. A request for any other model is refused with `403` — in the request's own wire shape, before anything goes upstream. Entries are exact ids or `prefix*`, case-insensitive. |
+| `--models=a,b,prefix*` | An allowlist. A request for any other model is refused with `403`, in the request's own wire shape, before anything goes upstream. Entries are exact ids or patterns where `*` stands for any run of characters (`prefix*`, `gpt-*-astra*`), case-insensitive. |
 | `--expires=30d` | Refused after this, like a revoked key. `12h`, `2w`, or an ISO date. |
 | `--budget=$5/day` | A daily cap on the API-equivalent price of the key's traffic. See **Budgets**. |
 | `--budget-tokens=2M/day` | A daily cap on tokens, every bucket counted. See **Budgets**. |
 | `--effort=low` | The effort this key's requests run at when they name none themselves (no model-name suffix, no effort field). `low`, `medium`, `high`, `xhigh` or `max`. See **Default effort**. |
 
+`dario keys models <name> --models=a,b` replaces an existing key's allowlist, and
+`--clear` lifts it (any model); the running proxy sees the change on the next request.
 `dario keys revoke <name>` refuses a key from now on and keeps it in the list;
 `dario keys rotate <name>` prints a new secret under the same name, seat,
 models and expiry, and the old secret stops at once; `dario keys remove

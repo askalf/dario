@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import {
   KEYS_VERSION, KEY_PREFIX, KEYS_FLUSH_DELAY_MS, KeyStore,
   createKey, deleteKey, emptyKeysFile, hashKey, keyAllowsModel, keyIsUsable, keysPathFor, looksLikeNamedKey,
-  matchKey, mintSecret, parseExpiry, parseKeysFile, publicKey, readKeysFile, resolveKeysPath, revokeKey, rotateKey, writeKeysFile,
+  matchKey, mintSecret, parseExpiry, parseKeysFile, publicKey, readKeysFile, resolveKeysPath, revokeKey, rotateKey, setKeyModels, writeKeysFile,
 } from '../dist/keys.js';
 import { addToLedger, emptyLedger, formatLedgerConsumers, parseLedger, pruneLedger, summarizeLedger, summarizeLedgerConsumers } from '../dist/ledger.js';
 
@@ -80,6 +80,26 @@ header('model allowlist');
   check('case-insensitive', keyAllowsModel(k, 'Claude-Sonnet-5'));
   check('anything else refused, including nothing', !keyAllowsModel(k, 'claude-haiku-4-5') && !keyAllowsModel(k, '') && !keyAllowsModel(k, null) && !keyAllowsModel(k, undefined));
   check('no list = any model', keyAllowsModel({}, 'whatever') && keyAllowsModel({ models: [] }, 'whatever'));
+  const tier = { models: ['gpt-*-astra*', 'claude-opus-*'] };
+  check('* in the middle: every version of a tier', keyAllowsModel(tier, 'gpt-6-astra') && keyAllowsModel(tier, 'gpt-6.2-astra') && keyAllowsModel(tier, 'GPT-6.2-Astra'));
+  check('* in the middle: another tier of the family is refused', !keyAllowsModel(tier, 'gpt-6.2-sol') && !keyAllowsModel(tier, 'gpt-astra'));
+  check('a pattern fits the whole id, not a part of it', !keyAllowsModel({ models: ['gpt-*-astra'] }, 'gpt-6.2-astra-mini') && keyAllowsModel({ models: ['gpt-*-astra'] }, 'gpt-6.2-astra')
+    && !keyAllowsModel({ models: ['*-astra'] }, 'x-astra-y') && !keyAllowsModel({ models: ['gpt-6-astra'] }, 'gpt-6-astra-x'));
+  check('* may stand for nothing, and several * are allowed', keyAllowsModel({ models: ['claude-opus*'] }, 'claude-opus') && keyAllowsModel({ models: ['a*b*c'] }, 'abc')
+    && keyAllowsModel({ models: ['a*b*c'] }, 'a-x-b-y-c') && !keyAllowsModel({ models: ['a*b*c'] }, 'a-c-b'));
+  check('a lone * allows any model', keyAllowsModel({ models: ['*'] }, 'anything-at-all'));
+}
+
+header('setKeyModels');
+{
+  const file = emptyKeysFile();
+  createKey(file, 'reviewer', { models: ['gpt-5.6-terra*'], now: NOW });
+  const widened = setKeyModels(file, 'reviewer', [' gpt-*-sol* ', 'gpt-*-astra*', '']);
+  check('replaces the allowlist, trimmed, blanks dropped', widened?.models?.join() === 'gpt-*-sol*,gpt-*-astra*' && keyAllowsModel(widened, 'gpt-6.2-sol') && !keyAllowsModel(widened, 'gpt-5.6-terra'));
+  const cleared = setKeyModels(file, 'reviewer', null);
+  check('null clears it: any model', cleared && cleared.models === undefined && keyAllowsModel(cleared, 'gpt-5.6-terra'));
+  check('an empty list clears it too', setKeyModels(file, 'reviewer', [])?.models === undefined);
+  check('an unknown key is null and changes nothing', setKeyModels(file, 'nobody', ['x']) === null && file.keys.length === 1);
 }
 
 header('expiry parsing');
