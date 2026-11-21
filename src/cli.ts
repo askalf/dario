@@ -21,7 +21,7 @@
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { renderSpendDonuts } from './donuts.js';
-import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, setKeyEffort, setKeyTranscript, isKeyEffort, KEY_EFFORT_VALUES, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, setKeyEffort, setKeyModels, setKeyTranscript, isKeyEffort, KEY_EFFORT_VALUES, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
 
 /**
  * `--budget=$5/day` / `--budget-tokens=2M/day` → a KeyBudget, or undefined when
@@ -970,6 +970,36 @@ async function keys() {
       const updated = store.mutate((file) => setKeyEffort(file, name, level));
       if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
       console.log(level ? `[dario] Key "${name}" default effort: ${level}` : `[dario] Key "${name}" default effort cleared.`);
+    } catch (err) {
+      console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // dario keys models <name> --models=a,b,pattern* | --clear
+  if (sub === 'models') {
+    const name = args[2];
+    const clear = args.includes('--clear');
+    const modelsArg = args.find((a) => a.startsWith('--models='));
+    const models = modelsArg ? modelsArg.slice('--models='.length).split(',').map((m) => m.trim()).filter(Boolean) : [];
+    // --clear and a --models= flag are exclusive whatever the flag holds; without --clear the list
+    // must name at least one model (an empty one would silently lift the allowlist).
+    if (!name || !KEY_NAME_RE.test(name) || (clear && modelsArg !== undefined) || (!clear && models.length === 0)) {
+      console.error('');
+      console.error('  Usage: dario keys models <name> --models=a,b,pattern* | --clear');
+      console.error('');
+      console.error('  Replace the models this key may ask for. Entries are exact ids or patterns where *');
+      console.error('  stands for any run of characters (claude-opus*, gpt-*-astra*). --clear lifts the');
+      console.error('  allowlist: any model.');
+      console.error('');
+      process.exit(1);
+    }
+    try {
+      // mutateFound writes only when the key was found, so an unknown name leaves the file unwritten.
+      const updated = store.mutateFound((file) => setKeyModels(file, name, clear ? null : models));
+      if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+      console.log(updated.models ? `[dario] Key "${name}" models: ${updated.models.join(', ')}` : `[dario] Key "${name}" models cleared: any model.`);
     } catch (err) {
       console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -2138,6 +2168,8 @@ export const FULL_HELP = `
                              running proxy sees it on the next request.
     dario keys list          Named keys: status, seat, last used, expiry,
                              models. --json for the raw list.
+    dario keys models NAME   Replace the key's model allowlist
+                             (--models=a,b,gpt-*-sol*) or --clear it.
     dario keys revoke NAME   Refuse a key from now on (kept in the list).
     dario keys rotate NAME   New secret, same name and settings; the old
                              secret stops at once.

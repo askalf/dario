@@ -66,7 +66,7 @@ export interface KeyRecord {
   expires?: string;
   /** Preferred pool seat alias. */
   seat?: string;
-  /** Model allowlist: exact ids, or `prefix*`. Empty / absent = any model. */
+  /** Model allowlist: exact ids, or patterns where `*` stands for any run of characters. Empty / absent = any model. */
   models?: string[];
   /** Daily caps, UTC day, enforced from the ledger (dario#1318 follow-up). Absent = unlimited. */
   budget?: KeyBudget;
@@ -285,6 +285,15 @@ export function setKeyEffort(file: KeysFile, name: string, effort: KeyEffort | s
   return k;
 }
 
+/** Replace a key's model allowlist, or clear it (any model) with null or an empty list. Returns null when there is no such key. */
+export function setKeyModels(file: KeysFile, name: string, models: readonly string[] | null): KeyRecord | null {
+  const k = file.keys.find((x) => x.name === name);
+  if (!k) return null;
+  const list = (models ?? []).map((m) => m.trim()).filter(Boolean);
+  if (list.length > 0) k.models = list; else delete k.models;
+  return k;
+}
+
 /** Arm or disarm a key's transcripts. Returns null when there is no such key. */
 export function setKeyTranscript(file: KeysFile, name: string, on: boolean): KeyRecord | null {
   const k = file.keys.find((x) => x.name === name);
@@ -493,13 +502,32 @@ export function matchKey(file: KeysFile, provided: string, now: number = Date.no
   return found;
 }
 
-/** `models` entries are exact ids, or `prefix*`; case-insensitive. Absent list = any model. */
+/**
+ * Whether `model` fits `pattern`: an exact id, or one where each `*` stands for any run of
+ * characters, the empty run included (`claude-opus*`, `gpt-*-astra*`). The whole id must fit, not
+ * just a part of it. Both are compared as given; keyAllowsModel lowercases them. Pure.
+ */
+export function modelPatternMatches(pattern: string, model: string): boolean {
+  const parts = pattern.split('*');
+  if (parts.length === 1) return model === pattern;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (!model.startsWith(first)) return false;
+  let at = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const found = model.indexOf(part, at);
+    if (found < 0) return false;
+    at = found + part.length;
+  }
+  return model.length - last.length >= at && model.endsWith(last);
+}
+
+/** `models` entries are exact ids, or patterns with `*` (modelPatternMatches); case-insensitive. Absent list = any model. */
 export function keyAllowsModel(k: Pick<KeyRecord, 'models'>, model: string | null | undefined): boolean {
   if (!k.models || k.models.length === 0) return true;
   const m = (model ?? '').toLowerCase();
   for (const entry of k.models) {
-    const e = entry.toLowerCase();
-    if (e.endsWith('*') ? m.startsWith(e.slice(0, -1)) : m === e) return true;
+    if (modelPatternMatches(entry.toLowerCase(), m)) return true;
   }
   return false;
 }
@@ -638,6 +666,22 @@ export class KeyStore {
   mutate<T>(fn: (file: KeysFile) => T): T {
     const current = readKeysFile(this.path);
     const out = fn(current);
+    writeKeysFile(this.path, current);
+    this.file = current;
+    try { this.mtimeMs = statSync(this.path).mtimeMs; } catch { this.mtimeMs = -1; }
+    return out;
+  }
+
+  /**
+   * Like mutate, but the file is written only when the change found what it edits in the file as
+   * read: a change that returns null or undefined leaves the file unwritten. Like mutate, it holds
+   * no lock across processes, so two commands that edit the keys file at the same moment leave
+   * the later one's write.
+   */
+  mutateFound<T>(fn: (file: KeysFile) => T | null | undefined): T | null {
+    const current = readKeysFile(this.path);
+    const out = fn(current);
+    if (out === null || out === undefined) return null;
     writeKeysFile(this.path, current);
     this.file = current;
     try { this.mtimeMs = statSync(this.path).mtimeMs; } catch { this.mtimeMs = -1; }

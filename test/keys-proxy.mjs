@@ -11,7 +11,7 @@
 // unknown dk_ credential.
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -143,6 +143,36 @@ let alice, bob, carol;
   const j = await runCli(['keys', 'list', '--json']);
   const parsed = JSON.parse(j.out);
   check2('list --json: three keys, no hash field, bob carries seat and models', parsed.count === 3 && parsed.keys.every((k) => !('hash' in k)) && parsed.keys.find((k) => k.name === 'bob').seat === 'two' && parsed.keys.find((k) => k.name === 'bob').models.length === 2, j.out);
+}
+
+header2('dario keys models: replace or clear an allowlist, and nothing else');
+{
+  const set = await runCli(['keys', 'models', 'bob', '--models=claude-opus-*, gpt-*-astra*']);
+  const onDisk = JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'bob');
+  check2('--models= replaces the allowlist, trimmed', set.code === 0 && set.out.includes('Key "bob" models: claude-opus-*, gpt-*-astra*') && onDisk.models.join() === 'claude-opus-*,gpt-*-astra*', set.out);
+  for (const [args, why] of [
+    [['--clear', '--models='], 'an empty --models= with --clear'],
+    [['--clear', '--models=,,'], 'a --models= of only commas with --clear'],
+    [['--clear', '--models=claude-sonnet-5'], 'a list with --clear'],
+    [['--models='], 'an empty --models='],
+    [['--models=, ,'], 'a --models= of only blanks'],
+    [[], 'neither flag'],
+  ]) {
+    const r = await runCli(['keys', 'models', 'bob', ...args]);
+    check2(`${why} prints the usage, exits 1 and changes nothing`, r.code === 1 && r.out.includes('Usage: dario keys models')
+      && JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'bob').models.join() === 'claude-opus-*,gpt-*-astra*', r.out);
+  }
+  const before = { text: await readFile(KEYS, 'utf8'), mtime: (await stat(KEYS)).mtimeMs };
+  await new Promise((r) => setTimeout(r, 20));
+  const ghost = await runCli(['keys', 'models', 'nobody', '--models=claude-sonnet-5']);
+  const after = { text: await readFile(KEYS, 'utf8'), mtime: (await stat(KEYS)).mtimeMs };
+  check2('an unknown key exits 1 and leaves the file unwritten', ghost.code === 1 && ghost.out.includes('No key named "nobody"')
+    && after.text === before.text && after.mtime === before.mtime, ghost.out);
+  const cleared = await runCli(['keys', 'models', 'carol', '--clear']);
+  check2('--clear alone lifts the allowlist', cleared.code === 0 && cleared.out.includes('Key "carol" models cleared') && !('models' in JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'carol')), cleared.out);
+  // bob's allowlist goes back to what the checks below expect.
+  const back = await runCli(['keys', 'models', 'bob', '--models=claude-sonnet-5,claude-haiku*']);
+  check2('bob\'s allowlist is put back', back.code === 0 && JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'bob').models.join() === 'claude-sonnet-5,claude-haiku*', back.out);
 }
 
 header2('authentication: root key, named keys, neither');
