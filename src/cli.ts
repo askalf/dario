@@ -983,7 +983,9 @@ async function keys() {
     const clear = args.includes('--clear');
     const modelsArg = args.find((a) => a.startsWith('--models='));
     const models = modelsArg ? modelsArg.slice('--models='.length).split(',').map((m) => m.trim()).filter(Boolean) : [];
-    if (!name || !KEY_NAME_RE.test(name) || clear === (models.length > 0)) {
+    // --clear and a --models= flag are exclusive whatever the flag holds; without --clear the list
+    // must name at least one model (an empty one would silently lift the allowlist).
+    if (!name || !KEY_NAME_RE.test(name) || (clear && modelsArg !== undefined) || (!clear && models.length === 0)) {
       console.error('');
       console.error('  Usage: dario keys models <name> --models=a,b,pattern* | --clear');
       console.error('');
