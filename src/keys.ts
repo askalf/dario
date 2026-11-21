@@ -672,6 +672,21 @@ export class KeyStore {
     return out;
   }
 
+  /**
+   * Like mutate, but the file is written only when the change found what it edits: a change that
+   * returns null or undefined leaves the file unwritten. The read, the change and the decision to
+   * write are one step, so nothing between them can make a change that found nothing write.
+   */
+  mutateFound<T>(fn: (file: KeysFile) => T | null | undefined): T | null {
+    const current = readKeysFile(this.path);
+    const out = fn(current);
+    if (out === null || out === undefined) return null;
+    writeKeysFile(this.path, current);
+    this.file = current;
+    try { this.mtimeMs = statSync(this.path).mtimeMs; } catch { this.mtimeMs = -1; }
+    return out;
+  }
+
   /** Persist pending last-used stamps. Safe to call at any time; a no-op when nothing is pending. */
   flush(): void {
     if (this.dirtyLastUsed.size === 0) return;

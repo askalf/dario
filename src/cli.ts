@@ -995,11 +995,9 @@ async function keys() {
       console.error('');
       process.exit(1);
     }
-    // Read before writing: store.mutate writes the file whatever the change returns, and an
-    // unknown name must leave the file as it was.
-    if (!store.list().some((k) => k.name === name)) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
     try {
-      const updated = store.mutate((file) => setKeyModels(file, name, clear ? null : models));
+      // mutateFound writes only when the key was found, so an unknown name leaves the file unwritten.
+      const updated = store.mutateFound((file) => setKeyModels(file, name, clear ? null : models));
       if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
       console.log(updated.models ? `[dario] Key "${name}" models: ${updated.models.join(', ')}` : `[dario] Key "${name}" models cleared: any model.`);
     } catch (err) {

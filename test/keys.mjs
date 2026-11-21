@@ -90,6 +90,23 @@ header('model allowlist');
   check('a lone * allows any model', keyAllowsModel({ models: ['*'] }, 'anything-at-all'));
 }
 
+header('KeyStore.mutateFound: no write when the change finds nothing');
+{
+  const dir = await mkdtemp(join(tmpdir(), 'dario-keys-found-'));
+  const path = join(dir, 'keys.json');
+  const seeded = emptyKeysFile();
+  createKey(seeded, 'reviewer', { models: ['gpt-5.6-terra*'], now: NOW });
+  writeKeysFile(path, seeded);
+  const store = new KeyStore(path);
+  const before = { text: await readFile(path, 'utf8'), mtime: (await stat(path)).mtimeMs };
+  await new Promise((r) => setTimeout(r, 20));
+  check('a change that returns null writes nothing and returns null',
+    store.mutateFound((file) => setKeyModels(file, 'nobody', ['x'])) === null && (await readFile(path, 'utf8')) === before.text && (await stat(path)).mtimeMs === before.mtime);
+  const found = store.mutateFound((file) => setKeyModels(file, 'reviewer', ['gpt-*-sol*']));
+  check('a change that finds its record is written and returned',
+    found?.models?.join() === 'gpt-*-sol*' && readKeysFile(path).keys.find((k) => k.name === 'reviewer').models.join() === 'gpt-*-sol*');
+}
+
 header('setKeyModels');
 {
   const file = emptyKeysFile();
