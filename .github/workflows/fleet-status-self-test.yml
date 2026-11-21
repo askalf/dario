@@ -25,11 +25,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
+      - uses: askalf/ci/actions/checkout-with-retry@96b847244dbb8fd6bce671734b57f48bbad9cefa # main 2026-11-21, askalf/ci#221
         with:
           persist-credentials: false
 
-      - uses: askalf/ci/actions/fleet-status-check@f0be7010038c63c66f4a341d0fd548edf1208c7c # main 2026-11-13, askalf/ci#219
+      - uses: askalf/ci/actions/fleet-status-check@96b847244dbb8fd6bce671734b57f48bbad9cefa # main 2026-11-21, askalf/ci#221
         with:
           min-own-exprs: '8'
           repo-only: fleet-status.yml fleet-status-backfill.yml cc-drift-auto-release.yml cc-drift-watch.yml drift-feed.yml homebrew-tap-notify.yml npm-drift-watch.yml pricing-drift-watch.yml sdk-drift-watch.yml sponsors-readme.yml stale.yml
