@@ -11,7 +11,7 @@
 // unknown dk_ credential.
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -162,8 +162,12 @@ header2('dario keys models: replace or clear an allowlist, and nothing else');
     check2(`${why} prints the usage, exits 1 and changes nothing`, r.code === 1 && r.out.includes('Usage: dario keys models')
       && JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'bob').models.join() === 'claude-opus-*,gpt-*-astra*', r.out);
   }
+  const before = { text: await readFile(KEYS, 'utf8'), mtime: (await stat(KEYS)).mtimeMs };
+  await new Promise((r) => setTimeout(r, 20));
   const ghost = await runCli(['keys', 'models', 'nobody', '--models=claude-sonnet-5']);
-  check2('an unknown key exits 1', ghost.code === 1 && ghost.out.includes('No key named "nobody"'), ghost.out);
+  const after = { text: await readFile(KEYS, 'utf8'), mtime: (await stat(KEYS)).mtimeMs };
+  check2('an unknown key exits 1 and leaves the file unwritten', ghost.code === 1 && ghost.out.includes('No key named "nobody"')
+    && after.text === before.text && after.mtime === before.mtime, ghost.out);
   const cleared = await runCli(['keys', 'models', 'carol', '--clear']);
   check2('--clear alone lifts the allowlist', cleared.code === 0 && cleared.out.includes('Key "carol" models cleared') && !('models' in JSON.parse(await readFile(KEYS, 'utf8')).keys.find((k) => k.name === 'carol')), cleared.out);
   // bob's allowlist goes back to what the checks below expect.

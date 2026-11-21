@@ -995,6 +995,9 @@ async function keys() {
       console.error('');
       process.exit(1);
     }
+    // Read before writing: store.mutate writes the file whatever the change returns, and an
+    // unknown name must leave the file as it was.
+    if (!store.list().some((k) => k.name === name)) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
     try {
       const updated = store.mutate((file) => setKeyModels(file, name, clear ? null : models));
       if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
