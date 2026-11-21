@@ -70,4 +70,5 @@ await Promise.all(Array.from({ length: jobs }, async () => {
 for (const r of failures) {
   console.error(`\n${r.name}: jazzer exited with ${r.err?.message ?? r.status ?? r.signal}; a reproducing input is in ${artifactDir || 'the working directory'}`);
 }
-if (failures.length) process.exit(failures[0].status || 1);
+// exitCode rather than process.exit, so a held block still being written to a pipe drains in full.
+if (failures.length) process.exitCode = failures[0].status || 1;
