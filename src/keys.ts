@@ -673,9 +673,10 @@ export class KeyStore {
   }
 
   /**
-   * Like mutate, but the file is written only when the change found what it edits: a change that
-   * returns null or undefined leaves the file unwritten. The read, the change and the decision to
-   * write are one step, so nothing between them can make a change that found nothing write.
+   * Like mutate, but the file is written only when the change found what it edits in the file as
+   * read: a change that returns null or undefined leaves the file unwritten. Like mutate, it holds
+   * no lock across processes, so two commands that edit the keys file at the same moment leave
+   * the later one's write.
    */
   mutateFound<T>(fn: (file: KeysFile) => T | null | undefined): T | null {
     const current = readKeysFile(this.path);
