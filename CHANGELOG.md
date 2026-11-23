@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.24.1] - 2026-11-23
+
+- **Claude Code 2.1.331 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.330.
+- **The bundled template is labelled Claude Code 2.1.331.** It was labelled 2.1.330. Its `user-agent` value is `claude-cli/2.1.331 (external, sdk-cli)`.
+
 ## [6.24.0] - 2026-11-21
 
 - **`dario keys models <name> --models=a,b | --clear` edits an existing key's model allowlist, and a `*` may stand anywhere in an entry.** An allowlist could only be set when a key was made, so widening one meant a new key and a new secret. Entries were exact ids or `prefix*`; now `*` stands for any run of characters wherever it is (`gpt-*-astra*` allows `gpt-6-astra` and `gpt-6.2-astra`, not `gpt-6.2-sol`), and the whole id must fit. `prefix*` and exact ids match as before.
