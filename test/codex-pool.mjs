@@ -44,6 +44,7 @@ const {
   selectCodexAccount, noteCodexDecline, clearCodexDecline,
   codexCooldownRemainingMs, codexStickyAliasFor,
   allCodexAccountsCooled, codexPoolRetryAfterMs, _resetCodexPoolForTest,
+  codexInFlightStart, codexInFlightEnd,
 } = await import('../dist/codex-accounts.js');
 
 let pass = 0, fail = 0;
@@ -57,6 +58,7 @@ function header(label) {
   console.log(`======================================================================`);
 }
 const aliasOf = (c) => (c ? c.alias : null);
+const serveTurn = (c) => { if (c) { codexInFlightStart(c.alias); codexInFlightEnd(c.alias); } return c; };
 
 // ----------------------------------------------------------------------
 header('sanity — the sandbox, not the operator\'s real seats');
@@ -99,14 +101,14 @@ header('stickiness — a conversation keeps its seat, and so its prompt cache');
 {
   _resetCodexPoolForTest();
   const convo = 'conv-aaaa';
-  const first = await selectCodexAccount(undefined, { stickyKey: convo });
+  const first = serveTurn(await selectCodexAccount(undefined, { stickyKey: convo }));
   check('binds on first use', aliasOf(first) === 'alpha');
   check('binding is readable', codexStickyAliasFor(convo) === 'alpha');
 
   // The regression that matters: rotating per request would send turn 2 to a
   // seat holding none of turn 1's cached prefix.
   for (let turn = 2; turn <= 6; turn++) {
-    const again = await selectCodexAccount(undefined, { stickyKey: convo });
+    const again = serveTurn(await selectCodexAccount(undefined, { stickyKey: convo }));
     if (aliasOf(again) !== 'alpha') { check(`turn ${turn} stayed on alpha`, false, aliasOf(again)); break; }
     if (turn === 6) check('six turns all stayed on the same seat', true);
   }

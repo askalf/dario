@@ -610,6 +610,73 @@ export function orderCodexSeats<T extends { alias: string }>(
 }
 let codexCooldowns = new ProviderCooldowns();
 
+const codexInFlight = new Map<string, number>();
+const codexReservations = new Map<string, number[]>();
+const CODEX_RESERVATION_MS = 15_000;
+const DEFAULT_CODEX_MAX_INFLIGHT_PER_SEAT = 4;
+
+function codexMaxInFlightPerSeat(): number {
+  const parsed = Number.parseInt(process.env['DARIO_CODEX_MAX_INFLIGHT_PER_SEAT'] ?? '', 10);
+  return parsed > 0 ? parsed : DEFAULT_CODEX_MAX_INFLIGHT_PER_SEAT;
+}
+
+function liveCodexReservations(alias: string, now: number = Date.now()): number[] {
+  const live = (codexReservations.get(alias) ?? []).filter((expiresAt) => expiresAt > now);
+  if (live.length > 0) codexReservations.set(alias, live);
+  else codexReservations.delete(alias);
+  return live;
+}
+
+function reserveCodexSeat(alias: string): void {
+  const now = Date.now();
+  codexReservations.set(alias, [...liveCodexReservations(alias, now), now + CODEX_RESERVATION_MS]);
+}
+
+export function releaseCodexSeat(alias: string): void {
+  const live = liveCodexReservations(alias);
+  if (live.length > 1) codexReservations.set(alias, live.slice(1));
+  else codexReservations.delete(alias);
+}
+
+export function codexInFlightStart(alias: string): void {
+  releaseCodexSeat(alias);
+  codexInFlight.set(alias, (codexInFlight.get(alias) ?? 0) + 1);
+}
+
+export function codexInFlightEnd(alias: string): void {
+  const next = (codexInFlight.get(alias) ?? 0) - 1;
+  if (next > 0) codexInFlight.set(alias, next);
+  else codexInFlight.delete(alias);
+}
+
+export function codexInFlightFor(alias: string): number {
+  return (codexInFlight.get(alias) ?? 0) + liveCodexReservations(alias).length;
+}
+
+function leastBusyCodexSeat<T extends { alias: string }>(
+  ordered: readonly T[],
+  canServe?: (alias: string) => boolean | undefined,
+): T | null {
+  const now = Date.now();
+  const { floor } = currentCodexRouting();
+  const aboveFloor = ordered.filter((seat) => (codexHeadroom(seat.alias, now) ?? 1) > floor);
+  const roomy = aboveFloor.length > 0 ? aboveFloor : ordered.slice(0, 1);
+  const verdicts = canServe ? roomy.map((seat) => ({ seat, lists: canServe(seat.alias) })) : [];
+  const candidates = verdicts.some((v) => v.lists === true)
+    ? verdicts.filter((v) => v.lists !== false).map((v) => v.seat)
+    : roomy;
+  let best: T | null = null;
+  let bestLoad = Number.POSITIVE_INFINITY;
+  for (const seat of candidates) {
+    const load = codexInFlightFor(seat.alias);
+    if (load < bestLoad) {
+      best = seat;
+      bestLoad = load;
+    }
+  }
+  return best;
+}
+
 /** conversation sticky key -> alias. Bounded; swept when it exceeds the cap. */
 const codexSticky = new Map<string, string>();
 const CODEX_STICKY_MAX = 500;
@@ -632,6 +699,8 @@ export function codexCooldownRemainingMs(alias: string): number {
 /** Test seam — forget every cool-down and binding. */
 export function _resetCodexPoolForTest(): void {
   codexSticky.clear();
+  codexInFlight.clear();
+  codexReservations.clear();
   // A fresh instance rather than clearing per alias: the previous version
   // emptied the sticky map first and then iterated it, so it cleared nothing
   // and cool-downs leaked between test cases.
@@ -676,16 +745,18 @@ export function rebindCodexSticky(key: string | null | undefined, alias: string)
  *   1. an explicitly named alias (`x-dario-account`, DARIO_CODEX_ACCOUNT) — a
  *      pin is an instruction, so it is honoured even while cooling; the caller
  *      asked for that seat and gets its answer, 429 included.
- *   2. the seat this conversation is already bound to, unless it is cooling.
- *   3. the first seat that is not cooling, in orderCodexSeats' order (the pool
- *      strategy over each seat's utilisation; alphabetical when there are no
- *      readings, so a fresh process is deterministic).
+ *   2. the seat this conversation is already bound to, unless it is cooling or
+ *      already has DARIO_CODEX_MAX_INFLIGHT_PER_SEAT requests in flight.
+ *   3. the least busy seat that is not cooling and is above the headroom floor,
+ *      busy meaning requests in flight plus recent picks not yet forwarded;
+ *      orderCodexSeats' order breaks ties, and a seat under the floor is used
+ *      only when no seat is above it.
  *   4. null when every seat is cooling. The caller answers from that rather
  *      than spending a request that can only 429 again.
  */
 export async function selectCodexAccount(
   preferredAlias?: string,
-  opts?: { stickyKey?: string | null },
+  opts?: { stickyKey?: string | null; canServe?: (alias: string) => boolean | undefined; reserve?: boolean },
 ): Promise<CodexAccountCredentials | null> {
   const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
   if (alias) {
@@ -696,21 +767,31 @@ export async function selectCodexAccount(
   if (all.length === 0) return null;
   const byAlias = [...all].sort((a, b) => a.alias.localeCompare(b.alias));
 
+  const reserve = opts?.reserve ?? true;
   const key = opts?.stickyKey ?? null;
+  let boundSeatAtCap = false;
   if (key) {
     const bound = codexSticky.get(key);
     if (bound && !codexCooldowns.isCooled(bound)) {
-      const hit = byAlias.find((c) => c.alias === bound);
+      boundSeatAtCap = codexInFlightFor(bound) >= codexMaxInFlightPerSeat();
+      const hit = boundSeatAtCap ? undefined : byAlias.find((c) => c.alias === bound);
+      if (hit) {
+        if (reserve) reserveCodexSeat(hit.alias);
+        return hit;
+      }
       // A binding to a seat that has since been removed falls through to a
       // fresh pick rather than failing the request.
-      if (hit) return hit;
-      codexSticky.delete(key);
+      if (!boundSeatAtCap) codexSticky.delete(key);
     }
   }
 
-  const free = orderCodexSeats(byAlias).find((c) => !codexCooldowns.isCooled(c.alias));
+  const free = leastBusyCodexSeat(
+    orderCodexSeats(byAlias).filter((c) => !codexCooldowns.isCooled(c.alias)),
+    opts?.canServe,
+  );
   if (!free) return null;
-  if (key) bindCodexSticky(key, free.alias);
+  if (key && !boundSeatAtCap) bindCodexSticky(key, free.alias);
+  if (reserve) reserveCodexSeat(free.alias);
   return free;
 }
 
@@ -751,8 +832,9 @@ export async function selectCodexAccountExcluding(
 ): Promise<CodexAccountCredentials | null> {
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
-  return orderCodexSeats(all)
-    .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
+  return leastBusyCodexSeat(
+    orderCodexSeats(all).filter((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)),
+  );
 }
 /** Every seat is cooling — the fail-fast condition, for the caller's message. */
 /**

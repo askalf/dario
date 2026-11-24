@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A new request on the ChatGPT subscription goes to the least busy seat above the headroom floor, not the first one in order.** Every `--pool-strategy` used to hand each new conversation to the first seat that was not cooling and never looked at what that seat was already serving, so a burst of fresh conversations piled onto one seat and drew short-window 429s while peers with 40%+ weekly headroom took nothing. Busy counts the requests a seat has in flight plus picks made in the last 15s that have not been forwarded yet. The strategy's order breaks ties, and a seat under the floor serves only when no seat is above it. The same rule picks the peer after a 429. A conversation stays on its seat for the prompt cache, but a turn moves to another seat while its own has `DARIO_CODEX_MAX_INFLIGHT_PER_SEAT` (default 4) requests in flight; the binding stays put. A seat whose model list lacks the requested model is passed over when another seat lists it.
+
 ## [6.24.2] - 2026-11-25
 
 - **Claude Code 2.1.332 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.331.

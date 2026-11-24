@@ -56,7 +56,7 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel, type ClaudeTarget } from './claude-model.js';
 import { MODEL_UNROUTABLE, DESKTOP_GATEWAY_ON_PLAN, DESKTOP_GATEWAY_ON_PLAN_MESSAGE } from './upstream-rejection.js';
 import { compareKeepMs, pruneCompareRecords, readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, releaseCodexSeat, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
   setCodexRouting,
 } from './codex-accounts.js';
@@ -4107,7 +4107,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // throws, so /v1/models keeps its "always answers" property.
       let codexNames: string[] = [];
       if (await hasAnyCodexAccount()) {
-        const stored = await selectCodexAccount();
+        const stored = await selectCodexAccount(undefined, { reserve: false });
         if (stored) {
           const creds = await getFreshCodexAccount(stored).catch(() => stored);
           codexNames = (await getCodexModelSlugs(creds))
@@ -4710,7 +4710,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // The CLIENT's bytes rather than the rewritten `body`: a resume is the
         // same conversation as the request that died mid-stream, so it must
         // hash to the same key and land on the seat that conversation holds.
-        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes) }).catch(() => null);
+        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes), reserve: false }).catch(() => null);
         if (!stored) return null;
         let creds: CodexAccountCredentials;
         try { creds = await getFreshCodexAccount(stored); } catch { return null; }
@@ -5121,11 +5121,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // `parsedBody` is the object the invalid-body guard already parsed,
           // so this costs no second JSON.parse.
           const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
+          let heldCodexSeat: string | null = null;
           if (await hasAnyCodexAccount()) {
             // With every seat cooling there is no free seat, but the request is
             // still the subscription's: routed on the seat that recovers first,
             // the codex branch below defers it or answers 429 with a retry-after.
-            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey }) ?? await soonestCodexSeat();
+            const requestedModel = rawModel;
+            const seatListsRequestedModel = (alias: string): boolean | undefined => {
+              const slugs = peekCodexModelSlugs(alias);
+              if (!requestedModel || !slugs) return undefined;
+              return isCodexModel(requestedModel, slugs) || isCodexModel(parseEffortSuffix(requestedModel).model, slugs);
+            };
+            const picked = await selectCodexAccount(undefined, { stickyKey: codexStickyKey, canServe: seatListsRequestedModel });
+            heldCodexSeat = picked?.alias ?? null;
+            const stored = picked ?? await soonestCodexSeat();
             if (stored) {
               try {
                 codexCreds = await getFreshCodexAccount(stored);
@@ -5186,6 +5195,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
+          if (heldCodexSeat && !(rawModel && codexCreds && decision.provider === 'codex')) releaseCodexSeat(heldCodexSeat);
           // A pin names a Claude POOL seat, so it is only meaningful for a request
           // this proxy would dispatch through that pool. Provider routing happens
           // here, BEFORE selectPoolAccount(), so a pinned request naming a Codex or
