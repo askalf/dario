@@ -3229,10 +3229,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const stickyKey = codexStickyKeyForBody(body);
     const stored = await selectCodexAccount(undefined, { stickyKey }).catch(() => null);
     if (!stored) return false;
+    let heldSeat: string | null = stored.alias;
+    const releaseHeldSeat = (): void => {
+      if (heldSeat) releaseCodexSeat(heldSeat);
+      heldSeat = null;
+    };
     let seat: CodexAccountCredentials | null;
     try {
       seat = await getFreshCodexAccount(stored);
     } catch {
+      releaseHeldSeat();
       return false;
     }
 
@@ -3286,13 +3292,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (!fallbackPick) {
         // This seat lists none of the fallback models. That used to end the
         // attempt outright; a peer may still list one.
-        if (!peer) return false;
+        if (!peer) {
+          releaseHeldSeat();
+          return false;
+        }
         seat = await getFreshCodexAccount(peer).catch(() => peer);
         continue;
       }
       const fallbackModel = fallbackPick.model;
       const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
-      if (!fallbackBody) return false;
+      if (!fallbackBody) {
+        releaseHeldSeat();
+        return false;
+      }
       const reqNo = requestCount;
       console.log(`[dario] #${reqNo} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
       requestCount++;
@@ -3300,6 +3312,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // the guards above would tell the rest of the request that codex had been
       // tried when it had not, suppressing a later legitimate attempt.
       attempted.add('codex');
+      releaseHeldSeat();
       served = await forwardToCodex(
         req, res, fallbackBody, seat, corsOrigin,
         { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
@@ -3325,6 +3338,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       rebindCodexSticky(stickyKey, peer.alias);
       seat = await getFreshCodexAccount(peer).catch(() => peer);
     }
+    releaseHeldSeat();
     if (served) {
       providerCooldowns.clear('codex');
     }
@@ -5122,6 +5136,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // so this costs no second JSON.parse.
           const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
           let heldCodexSeat: string | null = null;
+          const releaseHeldCodexSeat = (): void => {
+            if (heldCodexSeat) releaseCodexSeat(heldCodexSeat);
+            heldCodexSeat = null;
+          };
           if (await hasAnyCodexAccount()) {
             // With every seat cooling there is no free seat, but the request is
             // still the subscription's: routed on the seat that recovers first,
@@ -5140,7 +5158,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 codexCreds = await getFreshCodexAccount(stored);
                 codexModels = await getCodexModelSlugs(codexCreds);
               } catch (err) {
-                if (!(err instanceof CodexCredentialsUnavailableError)) throw err;
+                if (!(err instanceof CodexCredentialsUnavailableError)) {
+                  releaseHeldCodexSeat();
+                  throw err;
+                }
                 codexUnavailable = err;
                 // Cached slugs only — never an upstream call with a credential
                 // already known to be bad. Enough to answer the routing
@@ -5195,7 +5216,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
-          if (heldCodexSeat && !(rawModel && codexCreds && decision.provider === 'codex')) releaseCodexSeat(heldCodexSeat);
+          if (!(rawModel && codexCreds && decision.provider === 'codex')) releaseHeldCodexSeat();
           // A pin names a Claude POOL seat, so it is only meaningful for a request
           // this proxy would dispatch through that pool. Provider routing happens
           // here, BEFORE selectPoolAccount(), so a pinned request naming a Codex or
@@ -5203,6 +5224,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // the wrong thing healthy — the same silent-wrong-leg outcome as the
           // api-key case above. Refuse it instead.
           if (pinnedAccount && decision.provider !== 'claude') {
+            releaseHeldCodexSeat();
             requestCount++;
             res.writeHead(409, JSON_HEADERS);
             res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} names a Claude pool seat, but this request routes to ${decision.provider}; drop the header or ask for a Claude model` } }));
@@ -5244,6 +5266,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (!codexAvailable && !canDefer) {
               // Nothing else in the chain can pick this up, so an attempt could
               // only rediscover the limit. One verdict, no upstream request.
+              releaseHeldCodexSeat();
               writeAllProvidersRateLimited(['codex']);
               return;
             }
@@ -5330,6 +5353,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   }
                   peerTried.add(candidate.alias);
                 }
+                releaseHeldCodexSeat();
                 // A Responses client on a ChatGPT-subscription model: the backend speaks
                 // that shape natively, so the body goes through as written (model
                 // resolved) and the SSE comes back untouched — no round trip through the
@@ -5378,6 +5402,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
               }
             }
+            releaseHeldCodexSeat();
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');

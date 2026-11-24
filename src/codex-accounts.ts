@@ -639,7 +639,6 @@ export function releaseCodexSeat(alias: string): void {
 }
 
 export function codexInFlightStart(alias: string): void {
-  releaseCodexSeat(alias);
   codexInFlight.set(alias, (codexInFlight.get(alias) ?? 0) + 1);
 }
 
@@ -753,35 +752,42 @@ export function rebindCodexSticky(key: string | null | undefined, alias: string)
  *      only when no seat is above it.
  *   4. null when every seat is cooling. The caller answers from that rather
  *      than spending a request that can only 429 again.
+ *
+ * Unless `reserve` is false, the returned seat is held as busy until the
+ * caller hands the hold back with releaseCodexSeat, right before forwarding
+ * or when it decides not to forward.
  */
 export async function selectCodexAccount(
   preferredAlias?: string,
   opts?: { stickyKey?: string | null; canServe?: (alias: string) => boolean | undefined; reserve?: boolean },
 ): Promise<CodexAccountCredentials | null> {
+  const reserve = opts?.reserve ?? true;
   const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
   if (alias) {
     const one = await loadCodexAccount(alias);
-    if (one) return one;
+    if (one) {
+      if (reserve) reserveCodexSeat(one.alias);
+      return one;
+    }
   }
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
   const byAlias = [...all].sort((a, b) => a.alias.localeCompare(b.alias));
 
-  const reserve = opts?.reserve ?? true;
   const key = opts?.stickyKey ?? null;
   let boundSeatAtCap = false;
   if (key) {
     const bound = codexSticky.get(key);
     if (bound && !codexCooldowns.isCooled(bound)) {
-      boundSeatAtCap = codexInFlightFor(bound) >= codexMaxInFlightPerSeat();
-      const hit = boundSeatAtCap ? undefined : byAlias.find((c) => c.alias === bound);
-      if (hit) {
+      const hit = byAlias.find((c) => c.alias === bound);
+      // A binding to a seat that has since been removed falls through to a
+      // fresh pick rather than failing the request.
+      if (!hit) codexSticky.delete(key);
+      else if (codexInFlightFor(hit.alias) >= codexMaxInFlightPerSeat()) boundSeatAtCap = true;
+      else {
         if (reserve) reserveCodexSeat(hit.alias);
         return hit;
       }
-      // A binding to a seat that has since been removed falls through to a
-      // fresh pick rather than failing the request.
-      if (!boundSeatAtCap) codexSticky.delete(key);
     }
   }
 

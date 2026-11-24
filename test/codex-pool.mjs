@@ -44,7 +44,7 @@ const {
   selectCodexAccount, noteCodexDecline, clearCodexDecline,
   codexCooldownRemainingMs, codexStickyAliasFor,
   allCodexAccountsCooled, codexPoolRetryAfterMs, _resetCodexPoolForTest,
-  codexInFlightStart, codexInFlightEnd,
+  codexInFlightStart, codexInFlightEnd, releaseCodexSeat,
 } = await import('../dist/codex-accounts.js');
 
 let pass = 0, fail = 0;
@@ -58,7 +58,7 @@ function header(label) {
   console.log(`======================================================================`);
 }
 const aliasOf = (c) => (c ? c.alias : null);
-const serveTurn = (c) => { if (c) { codexInFlightStart(c.alias); codexInFlightEnd(c.alias); } return c; };
+const serveTurn = (c) => { if (c) { releaseCodexSeat(c.alias); codexInFlightStart(c.alias); codexInFlightEnd(c.alias); } return c; };
 
 // ----------------------------------------------------------------------
 header('sanity — the sandbox, not the operator\'s real seats');

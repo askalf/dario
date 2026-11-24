@@ -191,6 +191,16 @@ header('both seats limited -> the lane cools and stops spending requests');
     JSON.stringify(last));
 }
 
+// ---------------------------------------------------------------------------
+header('no seat is left held or in flight once the requests are done');
+// ---------------------------------------------------------------------------
+{
+  const { codexInFlightFor } = await import('../dist/codex-accounts.js');
+  const busy = () => ['alpha', 'bravo'].map((a) => codexInFlightFor(a));
+  for (let i = 0; i < 20 && busy().some((n) => n > 0); i++) await new Promise((r) => setTimeout(r, 50));
+  check('every pick was released or forwarded', busy().every((n) => n === 0), busy().join(','));
+}
+
 codexStub.close();
 console.log(`
 ${pass} pass, ${fail} fail`);

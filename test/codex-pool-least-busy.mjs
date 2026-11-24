@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,7 +37,7 @@ function header(label) {
   console.log(`======================================================================`);
 }
 const aliasOf = (c) => (c ? c.alias : null);
-const serve = (c) => { codexInFlightStart(c.alias); codexInFlightEnd(c.alias); return c; };
+const serve = (c) => { releaseCodexSeat(c.alias); codexInFlightStart(c.alias); codexInFlightEnd(c.alias); return c; };
 
 const WEEK = 7 * 24 * 60;
 function used(alias, percent) {
@@ -62,7 +62,7 @@ header('a burst of new conversations spreads across the seats above the floor');
     picks.join(',') === 'alpha,bravo,charlie,alpha,bravo,charlie', picks.join(','));
   check('the drained seat takes nothing while others have room', !picks.includes('drained'));
   for (const alias of picks) serve({ alias });
-  check('every hold is consumed once its request is forwarded',
+  check('every hold is handed back once its request is forwarded',
     ['alpha', 'bravo', 'charlie'].every((a) => codexInFlightFor(a) === 0));
 }
 
@@ -153,6 +153,55 @@ header('a hold that is never forwarded can be released');
   check('release drops the hold', codexInFlightFor(picked.alias) === 0);
   check('reserve: false places none',
     codexInFlightFor(aliasOf(await selectCodexAccount(undefined, { reserve: false }))) === 0);
+}
+
+// ----------------------------------------------------------------------
+header('a forward that placed no hold leaves other requests\' holds alone');
+// ----------------------------------------------------------------------
+{
+  _resetCodexPoolForTest();
+  const held = await selectCodexAccountExcluding(new Set(['alpha', 'charlie', 'drained']));
+  check('failover picks bravo without a hold', aliasOf(held) === 'bravo' && codexInFlightFor('bravo') === 0);
+  noteCodexDecline('alpha', 60_000);
+  noteCodexDecline('charlie', 60_000);
+  check('a burst pick holds bravo', aliasOf(await selectCodexAccount()) === 'bravo');
+  codexInFlightStart('bravo');
+  check('the failover forward adds to the hold, not replaces it', codexInFlightFor('bravo') === 2, codexInFlightFor('bravo'));
+  codexInFlightEnd('bravo');
+  check('the burst pick is still held after it ends', codexInFlightFor('bravo') === 1, codexInFlightFor('bravo'));
+}
+
+// ----------------------------------------------------------------------
+header('a pinned seat is held like any other pick');
+// ----------------------------------------------------------------------
+{
+  _resetCodexPoolForTest();
+  process.env['DARIO_CODEX_ACCOUNT'] = 'charlie';
+  check('the pin is honoured', aliasOf(await selectCodexAccount()) === 'charlie');
+  delete process.env['DARIO_CODEX_ACCOUNT'];
+  check('and holds charlie, so its release takes back its own hold', codexInFlightFor('charlie') === 1);
+  releaseCodexSeat('charlie');
+  check('released', codexInFlightFor('charlie') === 0);
+}
+
+// ----------------------------------------------------------------------
+header('a removed seat drops its binding even while it is busy');
+// ----------------------------------------------------------------------
+{
+  _resetCodexPoolForTest();
+  await writeFile(join(accountsDir, 'echo.json'), JSON.stringify({
+    alias: 'echo', accessToken: 'at-echo', refreshToken: 'rt-echo', expiresAt: FAR_FUTURE,
+  }));
+  used('echo', 0);
+  const convo = { stickyKey: 'conversation-3' };
+  check('binds to echo', aliasOf(serve(await selectCodexAccount(undefined, convo))) === 'echo');
+  for (let i = 0; i < 4; i++) codexInFlightStart('echo');
+  await unlink(join(accountsDir, 'echo.json'));
+  accounts.resetCodexPresenceCache();
+  const next = aliasOf(await selectCodexAccount(undefined, { ...convo, reserve: false }));
+  check('the conversation lands on a live seat', next !== 'echo', next);
+  check('and is bound to it', codexStickyAliasFor('conversation-3') === next, codexStickyAliasFor('conversation-3'));
+  for (let i = 0; i < 4; i++) codexInFlightEnd('echo');
 }
 
 // ----------------------------------------------------------------------

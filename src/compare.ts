@@ -215,7 +215,7 @@ export async function runCompare(opts: {
 }): Promise<{ side: CompareSide | null; skipped?: string }> {
   try {
     if (!(await hasAnyCodexAccount())) return { side: null, skipped: 'no Codex account configured' };
-    const stored = await selectCodexAccount();
+    const stored = await selectCodexAccount(undefined, { reserve: false });
     if (!stored) return { side: null, skipped: 'no Codex account configured' };
 
     const creds = await getFreshCodexAccount(stored);
