@@ -9,7 +9,8 @@ on:
     types: [completed]
 
 # The called workflow's job token reads the run, its artifact, redline.yml and the PR. The post
-# itself uses REDLINE_REVIEWER_TOKEN.
+# itself uses REDLINE_REVIEWER_TOKEN, and the second lens's post, as sprayberry-secondread,
+# REDLINE_SECOND_REVIEWER_TOKEN.
 permissions:
   actions: read
   contents: read
@@ -20,5 +21,7 @@ jobs:
     uses: askalf/ci/.github/workflows/redline-post-verdict.yml@f08085b8844366f9482d6d385ee048c2273c01c6 # main 2026-11-23, askalf/ci#231
     with:
       redline-ref: f08085b8844366f9482d6d385ee048c2273c01c6
+      second-reviewer-login: sprayberry-secondread
     secrets:
       reviewer-token: ${{ secrets.REDLINE_REVIEWER_TOKEN }}
+      second-reviewer-token: ${{ secrets.REDLINE_SECOND_REVIEWER_TOKEN }}
