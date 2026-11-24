@@ -47,9 +47,9 @@ jobs:
     # checked by the called workflow (open, not a draft, head in this repo) before anything is fetched.
     if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
     # Pinned so a change to the review workflow reaches this repo only through a reviewed bump here.
-    uses: askalf/ci/.github/workflows/redline-review.yml@156c1c3f51ca2e19915ec451b27ebda159c135f1 # main 2026-11-24, askalf/ci#237
+    uses: askalf/ci/.github/workflows/redline-review.yml@1d584fe464673b0fa066be22ed089eb3b161a06a # main 2026-11-24, askalf/ci#240
     with:
-      redline-ref: 156c1c3f51ca2e19915ec451b27ebda159c135f1
+      redline-ref: 1d584fe464673b0fa066be22ed089eb3b161a06a
       # redline is a per-repository ephemeral runner under its own account, reset between
       # jobs; the review never runs as root on the host.
       runner-label: redline
