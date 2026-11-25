@@ -382,7 +382,9 @@ console.log('\n=== a sibling branch that moves onto the chosen version while the
   const r = heal(fx, {
     prs: [pr(71, 'bot/cc-drift-p1', p1, 'DIRTY'), pr(72, 'bot/cc-drift-s', sib, 'CLEAN')],
     runs: [],
-    // The sibling moves during p1's last Redline check, after the PR list was read again.
+    // The sibling moves during p1's last Redline check. The PR list read after that check still
+    // shows the sibling's old head (the fixture never shows another), so only the read of origin
+    // can see the move.
     sideEffects: [{ key: 'redline.yml|queued', call: 3, git: ['--git-dir', fx.origin, 'update-ref', 'refs/heads/bot/cc-drift-s', moved] }],
   });
   check('p1 is not pushed, and the run ends cleanly and says which branch moved',

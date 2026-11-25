@@ -87,14 +87,17 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * One run as a list gives it, with what classifying it needs: a positive integer id, an event, a
- * known status, a run-name and a 40-hex head commit, and a conclusion that is a string or null.
- * Null for anything else, so a malformed row never reads as a run that holds nothing.
+ * known status, a run-name (not blank on a dispatched run, which names its PR and head there), a
+ * 40-hex head commit, and a conclusion that is a string or null. Null for anything else, so a
+ * malformed row never reads as a run that holds nothing. A pull_request run's name is the PR's
+ * own title, which busyReason never reads, so it may be anything.
  */
 export function runRow(r, workflow) {
   if (!r || typeof r !== 'object') return null;
   if (!Number.isSafeInteger(r.id) || r.id <= 0) return null;
   if (typeof r.event !== 'string' || r.event === '' || !RUN_STATUSES.includes(r.status)) return null;
   if (typeof r.display_title !== 'string' || typeof r.head_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(r.head_sha)) return null;
+  if (r.event === 'workflow_dispatch' && r.display_title.trim() === '') return null;
   if (r.conclusion !== undefined && r.conclusion !== null && typeof r.conclusion !== 'string') return null;
   return {
     workflow, id: r.id, event: r.event, status: r.status, conclusion: r.conclusion ?? null,

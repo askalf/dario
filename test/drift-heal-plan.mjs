@@ -61,9 +61,12 @@ check('the workflows and statuses read: the review, the fix and the verdict post
   // classified, so the list is unread rather than a run that holds nothing.
   const page = (row) => () => ({ total_count: 2, workflow_runs: [queued(1), row] });
   const malformed = [null, 'run', { ...queued(2), id: '2' }, { ...queued(2), id: 0 }, { ...queued(2), event: undefined }, { ...queued(2), event: '' },
-    { ...queued(2), status: 'unknown' }, { ...queued(2), head_sha: undefined }, { ...queued(2), head_sha: 'abc' }, { ...queued(2), display_title: undefined }, { ...queued(2), conclusion: 3 }];
-  check('a malformed row inside a valid page (no row, no id, no event, an unknown status, no head commit, no run-name, a conclusion that is not text): unread',
+    { ...queued(2), status: 'unknown' }, { ...queued(2), head_sha: undefined }, { ...queued(2), head_sha: 'abc' }, { ...queued(2), display_title: undefined }, { ...queued(2), conclusion: 3 },
+    { ...queued(2), event: 'workflow_dispatch', display_title: '' }, { ...queued(2), event: 'workflow_dispatch', display_title: '   ' }];
+  check('a malformed row inside a valid page (no row, no id, no event, an unknown status, no head commit, no run-name, a blank run-name on a dispatched run, a conclusion that is not text): unread',
     malformed.every((row) => readRunList(page(row), REPO, 'redline.yml', 'status=queued') === null));
+  check('a pull_request run whose name (the PR\'s own title) is blank is still read: its name is never used',
+    runRow({ ...queued(6), display_title: '' }, 'redline.yml')?.id === 6 && readRunList(page({ ...queued(2), display_title: '' }), REPO, 'redline.yml', 'status=queued')?.length === 2);
   check('runRow keeps what classifying needs, lowercases the head and leaves a missing finish null',
     JSON.stringify(runRow({ ...queued(5), head_sha: 'E'.repeat(40), updated_at: undefined }, 'redline.yml'))
       === JSON.stringify({ workflow: 'redline.yml', id: 5, event: 'pull_request', status: 'queued', conclusion: null, display_title: 'x', head_sha: 'e'.repeat(40), updated_at: null }));
