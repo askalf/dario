@@ -1,8 +1,7 @@
 // drift-pr-heal.yml leaves a healed drift PR that is still the drafter's one commit as one commit on
 // top of its base, with that commit's subject, and keeps the commits of any other branch (a fix pushed
-// on a draft, a template rebake's bake commit). It leaves a PR alone while a Redline review, fix or
-// verdict post is queued or running at its head. The git commands below are the ones the workflow
-// runs, replayed on throwaway repos.
+// on a draft, a template rebake's bake commit). The git commands below are the ones the workflow runs,
+// replayed on throwaway repos.
 
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -27,28 +26,7 @@ check('the one commit keeps the draft commit\'s subject', wf.includes('git log -
 check('it flattens only a branch that is still one commit of its own, and never a template rebake',
   wf.includes('own=$(git rev-list --no-merges --count "origin/$base..origin/$head")')
   && wf.includes('if [ "$own" -eq 1 ] && [[ "$head" != bot/template-rebake-* ]]; then')
-  && wf.indexOf('if [ "$own" -eq 1 ]') < reset);
-
-console.log('\n=== drift-pr-heal leaves a PR alone while Redline is at work on its head ===');
-const planAt = wf.indexOf('plan=$(node "$busy_js" plan "$REPO"');
-const loopAt = wf.indexOf('for i in $(seq 0 $((count - 1))); do');
-const renumberAt = wf.indexOf('node scripts/renumber-release-version.mjs');
-const recheckAt = wf.indexOf('busy=$(node "$busy_js" check "$REPO" "$pr" "$head_sha"');
-check('before the loop, it plans from the Redline runs with master\'s copy of the script', planAt !== -1 && planAt < loopAt
-  && wf.indexOf('cp scripts/drift-heal-busy.mjs "$busy_js"') < planAt);
-check('it lists the three Redline workflows\' queued and running runs, every page, with the job token',
-  wf.includes('for wf in redline.yml redline-fix.yml redline-post.yml; do') && wf.includes('for st in queued in_progress; do')
-  && wf.includes('GH_TOKEN="$RUNS_TOKEN" gh api --paginate "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100"')
-  && wf.includes('RUNS_TOKEN: ${{ github.token }}'));
-check('runs that cannot be listed are written as null, which makes every PR busy', /if ! out\+=\$\(GH_TOKEN="\$RUNS_TOKEN" gh api[\s\S]*?\n\s+echo null\n\s+return 0/.test(wf));
-check('a busy PR is skipped before anything changes, and the floor starts at the version it holds',
-  wf.includes(`busy=$(jq -r --arg n "$pr" '.busy[$n] // ""' <<< "$plan")`) && wf.indexOf(`'.busy[$n] // ""'`) < renumberAt
-  && wf.includes(`floor=$(jq -r '.floor' <<< "$plan")`));
-check('it checks again just before the push, and reserves the version of a PR it then skips', recheckAt > reset && recheckAt < push
-  && wf.includes(`raise_floor "$(git show "origin/$head:package.json" | jq -r '.version')"`));
-check('the floor only rises', wf.includes("raise_floor() { floor=$(printf '%s\\n%s\\n' \"$floor\" \"$1\" | sed '/^$/d' | sort -V | tail -1); }")
-  && !wf.includes('floor="$head_ver"'));
-check('the job may read the runs', /permissions:\n\s+contents: write\n\s+pull-requests: read\n\s+actions: read\n/.test(wf));
+  && wf.indexOf('if [ "$own" -eq 1 ]') !== -1 && wf.indexOf('if [ "$own" -eq 1 ]') < reset);
 
 const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, encoding: 'utf8' }).trim();
 
