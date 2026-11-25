@@ -162,34 +162,53 @@ jobs:
           # Every run of the three Redline workflows that has not finished, by each
           # such status and every page of it, as one JSON list, or `null` when a list
           # could not be read in full, which drift-heal-plan.mjs counts as busy. Read
-          # with the job's own token.
+          # with the job's own token. The lists are read a page and a status at a time,
+          # and a run can change status, or another can join a list, between two reads.
+          # So each status's pages must add up to the total its first page gave, and
+          # each first page is read again at the end: a total that moved means a run
+          # may have been missed, and the read counts as incomplete. Left: two runs
+          # trading places within one status between those reads, which leaves its
+          # total unchanged.
           redline_runs() {
-            local out='[]' wf st page raw rows n
+            local out='[]' wf st page raw rows n got
+            local -A totals=()
             for wf in redline.yml redline-fix.yml redline-post.yml; do
-              for st in queued in_progress waiting requested pending; do
+              for st in requested pending waiting queued in_progress; do
                 page=1
+                got=0
                 while :; do
                   raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100&page=$page") || { echo null; return 0; }
+                  if [ "$page" -eq 1 ]; then totals["$wf|$st"]=$(jq '.total_count' <<< "$raw") || { echo null; return 0; }; fi
                   rows=$(jq -c --arg wf "$wf" '[.workflow_runs[]
                          | {workflow: $wf, id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
                   out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
                   n=$(jq 'length' <<< "$rows")
+                  got=$((got + n))
                   if [ "$n" -lt 100 ]; then break; fi
                   page=$((page + 1))
                   if [ "$page" -gt 10 ]; then echo null; return 0; fi
                 done
+                if [ "$got" != "${totals[$wf|$st]}" ]; then echo null; return 0; fi
+              done
+            done
+            for wf in redline.yml redline-fix.yml redline-post.yml; do
+              for st in requested pending waiting queued in_progress; do
+                raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100&page=1") || { echo null; return 0; }
+                if [ "$(jq '.total_count' <<< "$raw")" != "${totals[$wf|$st]}" ]; then echo null; return 0; fi
               done
             done
             echo "$out"
           }
-          # Every fix run at head $1, any status, every page, as a JSON list, or `null`.
-          # The platform's fix dispatcher answers a finished fix run after it, and until
-          # it does the head the run read must not move. Read by head, so a run created
-          # long ago and re-run lately, or one that waited long in the queue, is here.
+          # Every fix run dispatched at head $1, any status, every page, as a JSON list,
+          # or `null`. The platform's fix dispatcher answers a finished fix run after it,
+          # and until it does the head the run read must not move. This is the list the
+          # dispatcher itself reads (event workflow_dispatch, head_sha the PR head), so a
+          # run it would apply is here, however long ago it was created; one dispatched
+          # from another ref is one it never applies.
           fix_runs_at() {
             local out='[]' page=1 raw rows n
             while :; do
-              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?head_sha=$1&per_page=100&page=$page") || { echo null; return 0; }
+              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?event=workflow_dispatch&head_sha=$1&per_page=100&page=$page") || { echo null; return 0; }
               rows=$(jq -c '[.workflow_runs[]
                      | {workflow: "redline-fix.yml", id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
               out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")

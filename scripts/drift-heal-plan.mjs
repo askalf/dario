@@ -16,8 +16,9 @@
 //
 // What this cannot see: a review that starts, or a sibling branch that moves, in the moments
 // between the workflow's last check and its push. Redline then drops that review and reads the
-// new head, one round later; a sibling that moved onto the pushed version is renumbered by the
-// next run.
+// new head, one round later. A sibling that moved onto the pushed version keeps it until one of
+// the two becomes a candidate again (conflicting or behind its base), when a later run
+// renumbers it; while both stay up to date, the version gate refuses the second to merge.
 //
 // CLI. The workflow copies this file and _drift-patch-helpers.mjs out of the checkout before its
 // loop, since each candidate branch is checked out in turn and may predate them.
@@ -79,12 +80,15 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *     workflow sets: `Redline review <repo>#<pr> @ <head>`, with ` (re-read)` on a re-read, and
  *     `Redline fix <repo>#<pr> @ <head>`. One not finished holds the PR when it names this PR and
  *     this head (a short head names it by prefix).
- *   - A fix run that finished at this head still holds it until the platform answers it without
+ *   - A fix run that finished at this head (its own head commit is this head: the platform's fix
+ *     dispatcher applies only such runs, listing them by head_sha, so a run dispatched from
+ *     another ref has nothing it will apply here) still holds it until the platform answers it without
  *     moving the head: a comment `## Fix not applied at <head>`, `## Fix refused at <head>` or
  *     `## Description updated at <head>` posted after the run's latest attempt finished, so the
- *     answer to an earlier run at the same head does not release a retry there. (The platform
- *     posts one comment per heading, so a retry refused the same way gets no new one, and holds
- *     the head until the wait ends.) A fix that was applied moved the head, so its run names an
+ *     answer to an earlier run at the same head does not release a retry there, and each finished
+ *     run needs an answer of its own: one comment does not answer two runs. (The platform posts
+ *     one comment per heading, so a retry refused the same way gets no new one, and holds the head
+ *     until the wait ends.) A fix that was applied moved the head, so its run names an
  *     older one. A cancelled or skipped run has nothing to apply, and past FIX_RESULT_WAIT_MS from
  *     the latest attempt's finish the head is free again.
  *   - A review on pull_request carries the PR's own title as its name, which any author writes,
@@ -100,19 +104,18 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
     const m = named.exec(String(r.display_title ?? ''));
     return m !== null && m[1] === kind && !(kind === 'fix' && m[3]) && head.startsWith(m[2]);
   };
+  const finished = [];
   for (const r of runs) {
     if (!r) continue;
     const what = `${r.workflow} run ${r.id} (${r.status})`;
     if (r.status === 'completed') {
       if (r.workflow !== 'redline-fix.yml' || r.event !== 'workflow_dispatch' || !namesThisHead(r, 'fix')) continue;
       if (r.conclusion === 'cancelled' || r.conclusion === 'skipped') continue;
-      const finished = Date.parse(String(r.updated_at ?? ''));
-      if (Number.isFinite(finished) && now - finished >= FIX_RESULT_WAIT_MS) continue;
-      if (!Array.isArray(comments)) return `${what} finished, and the PR's comments could not be read to see whether its fix was answered`;
-      const answered = Number.isFinite(finished) && comments.some((c) =>
-        FIX_RESULT_AT_HEAD.exec(String(c?.line ?? ''))?.[1] === head && Date.parse(String(c?.at ?? '')) >= finished);
-      if (answered) continue;
-      return `${what} finished, and its fix is not yet applied or refused at this head`;
+      if (String(r.head_sha ?? '').toLowerCase() !== head) continue;
+      const at = Date.parse(String(r.updated_at ?? ''));
+      if (Number.isFinite(at) && now - at >= FIX_RESULT_WAIT_MS) continue;
+      finished.push({ what, at });
+      continue;
     }
     if (r.workflow === 'redline-post.yml') return `${what} is posting a verdict`;
     if (r.event === 'workflow_dispatch') {
@@ -123,6 +126,23 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
     if (r.event === 'pull_request' && r.workflow === 'redline.yml' && String(r.head_sha ?? '').toLowerCase() === head) {
       return `${what} is reviewing this head`;
     }
+  }
+  if (finished.length === 0) return '';
+  if (!Array.isArray(comments)) return `${finished[0].what} finished, and the PR's comments could not be read to see whether its fix was answered`;
+  const unreadable = finished.find((f) => !Number.isFinite(f.at));
+  if (unreadable) return `${unreadable.what} finished, and when it finished cannot be read`;
+  // Each finished run, earliest first, takes the earliest answer posted after it finished that no
+  // earlier run took. A run left without one is not answered yet.
+  const answers = comments
+    .filter((c) => FIX_RESULT_AT_HEAD.exec(String(c?.line ?? ''))?.[1] === head)
+    .map((c) => Date.parse(String(c?.at ?? '')))
+    .filter(Number.isFinite)
+    .sort((x, y) => x - y);
+  let next = 0;
+  for (const f of [...finished].sort((x, y) => x.at - y.at)) {
+    while (next < answers.length && answers[next] < f.at) next++;
+    if (next >= answers.length) return `${f.what} finished, and its fix is not yet applied or refused at this head`;
+    next++;
   }
   return '';
 }

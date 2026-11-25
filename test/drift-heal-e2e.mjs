@@ -2,9 +2,9 @@
 // holds master and the drift branches, a fresh clone of it as the job's checkout (on master, with
 // no other local branch, as the runner's), and a stand-in for gh (test/fixtures/drift-heal-gh.mjs)
 // that answers the PR list, Redline's runs and the PRs' comments from a fixture. bash, git, jq, node,
-// GNU date and sort, and the repository's own release scripts are the real ones. Without what the
-// step needs (bash 4 associative arrays, GNU date -d, sort -V, jq, git) it is skipped, except in
-// CI, where it fails. The fixtures are removed when the test ends.
+// sort and the repository's own release scripts are the real ones. Without what the step needs
+// (bash 4 associative arrays, sort -V, jq, git) it is skipped, except in CI, where it fails. The
+// fixtures are removed when the test ends.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,7 +24,6 @@ const PROBE = [
   'declare -A m=([k]=v)',
   '[ "${m[k]}" = v ]',
   '[[ 1.2.3 =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]',
-  'date -u -d "-24 hours" +%Y-%m-%dT%H:%M:%SZ >/dev/null',
   '[ "$(printf "1.0.10\\n1.0.9\\n" | sort -V | tail -1)" = 1.0.10 ]',
   'jq -n 1 >/dev/null',
   'git --version >/dev/null',
@@ -32,10 +31,10 @@ const PROBE = [
 const usable = process.platform !== 'win32' && spawnSync('bash', ['--noprofile', '--norc', '-c', PROBE]).status === 0;
 if (!usable) {
   if (process.env.CI) {
-    console.log('  FAIL the heal step needs bash 4, GNU date and sort, jq and git, and this runner lacks one');
+    console.log('  FAIL the heal step needs bash 4, sort -V, jq and git, and this runner lacks one');
     process.exit(1);
   }
-  console.log('  SKIP drift-heal-e2e: needs bash 4, GNU date and sort, jq and git (CI runs it)');
+  console.log('  SKIP drift-heal-e2e: needs bash 4, sort -V, jq and git (CI runs it)');
   process.exit(0);
 }
 
@@ -191,7 +190,7 @@ console.log('\n=== a review at a head holds that PR; every open drift PR holds i
     && r.calls.filter((x2) => x2.args[0] === 'pr').every((x2) => x2.token === 'pat-token'));
   check('every unfinished status of every Redline workflow is read, and the fix runs at each checked head',
     ['redline.yml', 'redline-fix.yml', 'redline-post.yml'].every((wf) => ['queued', 'in_progress', 'waiting', 'requested', 'pending'].every((st) => r.calls.some((x2) => String(x2.args[1]).includes(`/${wf}/runs?status=${st}&`))))
-    && r.calls.some((x2) => String(x2.args[1]).includes(`/redline-fix.yml/runs?head_sha=${a}&`)));
+    && r.calls.some((x2) => String(x2.args[1]).includes(`/redline-fix.yml/runs?event=workflow_dispatch&head_sha=${a}&`)));
 }
 
 console.log('\n=== an older queued review behind 100 newer ones is still found ===');
@@ -209,6 +208,26 @@ console.log('\n=== an older queued review behind 100 newer ones is still found =
     && r.calls.some((x2) => String(x2.args[1]).includes('/redline.yml/runs?status=queued&per_page=100&page=2')), r.out);
 }
 
+console.log('\n=== a list that changes while it is read counts as unread ===');
+{
+  const fx = fixture();
+  const c = draft(fx, 'bot/cc-drift-c', fx.old, '1.0.5', 'change c');
+  releaseMaster(fx, '1.0.5');
+  // 100 newer queued runs, the first of which starts once the first page is read (from the second
+  // read of the queued list on), and C's queued
+  // review last: page two comes back empty, though C's review was queued all along.
+  const newer = Array.from({ length: 100 }, (_, i) => ({ workflow: 'redline.yml', id: 3000 + i, event: 'pull_request', status: 'queued', display_title: 'other', head_sha: (i % 10).toString().repeat(40),
+    ...(i === 0 ? { changeAfter: { key: 'redline.yml|queued', calls: 2, status: 'in_progress' } } : {}) }));
+  const r = heal(fx, { prs: [pr(13, 'bot/cc-drift-c', c, 'DIRTY')], runs: [...newer, { workflow: 'redline.yml', id: 1, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c }] });
+  check('a queued list that shrinks between its pages: held, as runs that could not be listed', r.status === 0 && tipOf(fx, 'bot/cc-drift-c') === c && /the Redline runs could not be listed/.test(section(r.out, 13)), r.out);
+  const fx2 = fixture();
+  const c2 = draft(fx2, 'bot/cc-drift-c', fx2.old, '1.0.5', 'change c');
+  releaseMaster(fx2, '1.0.5');
+  // A review of C that joins the queued list after it was read (a re-run), before the end of the scan.
+  const r2 = heal(fx2, { prs: [pr(13, 'bot/cc-drift-c', c2, 'DIRTY')], runs: [{ workflow: 'redline.yml', id: 2, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c2, appearAfter: 2 }] });
+  check('a review that joins a list already read is caught when the first pages are read again', r2.status === 0 && tipOf(fx2, 'bot/cc-drift-c') === c2 && /could not be listed/.test(section(r2.out, 13)), r2.out);
+}
+
 console.log('\n=== a review that starts while a PR is healed: left as it was, and its version still held ===');
 {
   const fx = fixture();
@@ -218,8 +237,9 @@ console.log('\n=== a review that starts while a PR is healed: left as it was, an
   commitOnMaster(fx, 'docs: unrelated', () => writeFileSync(join(fx.work, 'notes.txt'), 'master moved\n'));
   const r = heal(fx, {
     prs: [pr(21, 'bot/cc-drift-e', e, 'BEHIND'), pr(22, 'bot/cc-drift-f', f, 'DIRTY')],
-    // Shown from the second read of redline.yml's in-progress runs on: after E's first check, before its push.
-    runs: [{ workflow: 'redline.yml', id: 7, event: 'pull_request', status: 'in_progress', display_title: 'chore(drift): change e', head_sha: e, appearAfter: 2 }],
+    // Each check reads every first page twice. Shown from the third first-page read of redline.yml's
+    // in-progress runs on: after E's first check, from its check before the push.
+    runs: [{ workflow: 'redline.yml', id: 7, event: 'pull_request', status: 'in_progress', display_title: 'chore(drift): change e', head_sha: e, appearAfter: 3 }],
   });
   check('the run ends cleanly', r.status === 0 && /healed=1 refused=0 skipped=1/.test(r.out), r.out);
   check('E, whose review started while it was healed, is left as it was', tipOf(fx, 'bot/cc-drift-e') === e && /SKIPPED: Redline started on this head while it was healed/.test(section(r.out, 21)), section(r.out, 21));
@@ -249,6 +269,8 @@ console.log('\n=== a dispatched re-read holds its PR; a finished fix holds it un
       finished(12, 54, n2, { created_at: ago(40), updated_at: ago(30) }), finished(13, 54, n2, { created_at: ago(20), updated_at: ago(5) }),
       // Q: created two days ago and re-run lately.
       finished(14, 55, q, { created_at: ago(2 * 24 * 60), updated_at: ago(5) }),
+      // L: a fix run dispatched from master that names L: never applied by the dispatcher, so it holds nothing.
+      finished(15, 52, l, { head_sha: 'b'.repeat(40) }),
     ],
     comments: { 52: [refused(l, ago(1))], 54: [refused(n2, ago(25))] },
   });
@@ -312,7 +334,7 @@ console.log('\n=== a sibling branch that moves onto the chosen version while the
     prs: [pr(71, 'bot/cc-drift-p1', p1, 'DIRTY'), pr(72, 'bot/cc-drift-s', sib, 'CLEAN')],
     runs: [],
     // The sibling moves during p1's last Redline check, after the PR list was read again.
-    sideEffects: [{ key: 'redline.yml|queued', call: 2, git: ['--git-dir', fx.origin, 'update-ref', 'refs/heads/bot/cc-drift-s', moved] }],
+    sideEffects: [{ key: 'redline.yml|queued', call: 3, git: ['--git-dir', fx.origin, 'update-ref', 'refs/heads/bot/cc-drift-s', moved] }],
   });
   check('p1 is not pushed, and the run ends cleanly and says which branch moved',
     r.status === 0 && tipOf(fx, 'bot/cc-drift-p1') === p1 && /STOPPED: a drift branch changed during the run \(bot\/cc-drift-s \(#72\) is at/.test(r.out), r.out);
