@@ -66,6 +66,45 @@ function isAnthropicDefinedTool(def: Record<string, unknown>): boolean {
   return typeof def.type === 'string' && def.type !== 'custom';
 }
 
+/**
+ * The bundled definition of a Claude Code tool, with the top-level fields the
+ * client's own declaration of that tool requires added to its `required` list
+ * when the bundled schema defines them. A Claude Code tool is mapped back to
+ * the same name, so the client reads the model's call against its own
+ * declaration. Hybrid mode can still fill context fields the call leaves out,
+ * and nothing here validates the returned input against the client's schema.
+ * A required field the bundled `properties` does not define is not added, so
+ * the outgoing schema stays satisfiable; nested schemas are not read. Returns
+ * the bundled object itself when nothing is added; it is never mutated.
+ */
+export function withClientRequiredFields<T extends { name: string }>(def: T, clientDef: Record<string, unknown> | undefined): T {
+  if (!clientDef) return def;
+  const bundled = (def as { input_schema?: unknown }).input_schema;
+  const client = clientDef.input_schema;
+  if (!bundled || typeof bundled !== 'object' || !client || typeof client !== 'object') return def;
+  const clientRequired = (client as { required?: unknown }).required;
+  if (!Array.isArray(clientRequired)) return def;
+  const schema = bundled as { properties?: unknown; required?: unknown };
+  const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties as Record<string, unknown> : {};
+  const required: unknown[] = Array.isArray(schema.required) ? schema.required : [];
+  const added = [...new Set(clientRequired.filter((f): f is string =>
+    typeof f === 'string' && Object.prototype.hasOwnProperty.call(properties, f) && !required.includes(f)))];
+  if (added.length === 0) return def;
+  return { ...def, input_schema: { ...schema, required: [...required, ...added] } };
+}
+
+/**
+ * The client's declaration that a bundled tool stands in for: the one under
+ * exactly the bundled name. A declaration whose name differs only in case does
+ * not supply required fields to the bundled tool.
+ */
+function clientDeclarationOf(
+  clientTools: Array<Record<string, unknown>>,
+  name: string,
+): Record<string, unknown> | undefined {
+  return clientTools.find((c) => c.name === name);
+}
+
 /** Names in the bundle whose definition is not advertisable (see above). Empty on a clean bake. */
 export const CC_TOOL_DEFINITIONS_UNADVERTISABLE: Set<string> = new Set(
   (TEMPLATE.tools as Array<{ name: string }>).filter((t) => !isAdvertisableToolDefinition(t)).map((t) => String(t.name)),
@@ -112,6 +151,11 @@ export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
  *  matches a client declaration against, case-insensitively, when it advertises. */
 const CC_TOOL_NAMES_LOWER: Set<string> = new Set(
   CC_TOOL_DEFINITIONS_UNION.filter((t) => !isMcpToolName(t.name)).map((t) => t.name.toLowerCase()),
+);
+
+/** Every non-MCP name the bundle knows, keyed by its lowercased form. */
+const CC_NATIVE_NAME_BY_LOWER: Map<string, string> = new Map(
+  [...CC_NATIVE_NAMES_UNION].filter((n) => !isMcpToolName(n)).map((n) => [n.toLowerCase(), n]),
 );
 
 /** CC's own tool names, EXACT case ("Read", "Bash", "Agent", …). A CC client's
@@ -2117,8 +2161,57 @@ export function buildCCRequest(
     // sending both `WebSearch` and some unmapped tool like `memory_get`
     // could have both forward-map to `WebSearch`, and the reverse map would
     // then rewrite real `WebSearch` responses to the collided client name.
+    const uncarried: Array<{ name: string; reason: string }> = [];
+    const declaredExact = new Set(clientTools.map((t) => t.name).filter((n): n is string => typeof n === 'string'));
+    // A case-only alias of a declared CC tool (`read` next to `Read`).
+    const isCaseAlias = (n: unknown): n is string => {
+      if (typeof n !== 'string' || isMcpToolName(n)) return false;
+      const cc = CC_NATIVE_NAME_BY_LOWER.get(n.toLowerCase());
+      return cc !== undefined && cc !== n && declaredExact.has(cc);
+    };
+    // Wire names an alias must not take: every declared name (CC tools,
+    // server-defined tools and MCP tools keep theirs) and the MCP-shaped name
+    // any other declared tool may be carried under.
+    const reservedWire = new Set<string>(declaredExact);
+    for (const n of declaredExact) if (!isCaseAlias(n)) reservedWire.add(`${CLIENT_TOOL_MCP_PREFIX}${n}`);
+    const freeAliasWireName = (clientName: string): string | undefined => {
+      const base = `${CLIENT_TOOL_MCP_PREFIX}${clientName}`;
+      for (let i = 1; i <= reservedWire.size + 1; i++) {
+        const candidate = i === 1 ? base : `${base}_${i}`;
+        if (TOOL_NAME_PATTERN.test(candidate) && !reservedWire.has(candidate)) return candidate;
+      }
+      return undefined;
+    };
+    const withHybridFields = (tool: Record<string, unknown>, mapping: ToolMapping): ToolMapping => {
+      if (!opts.hybridTools) return mapping;
+      const schema = tool.input_schema as { properties?: Record<string, unknown> } | undefined;
+      return { ...mapping, clientFields: schema?.properties ? Object.keys(schema.properties) : [] };
+    };
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
+      // A case-only alias of a declared CC tool is a second client tool, not
+      // the CC one, so a call to it, a forced tool_choice of it and a call to
+      // the CC tool each have one route back. A custom alias with an
+      // input_schema goes out under a wire name no other outgoing tool has. A
+      // server-defined alias goes out as declared: its type fixes its name, and
+      // every declared name is reserved, so no other tool takes it. A custom
+      // alias without an input_schema maps the way any other client name does
+      // below.
+      if (isCaseAlias(tool.name)) {
+        const toolType = (tool as { type?: unknown }).type;
+        if (typeof toolType === 'string' && toolType !== 'custom') {
+          activeToolMap.set(tool.name, withHybridFields(tool, { ccTool: tool.name, translateArgs: (a) => a, translateBack: (a) => a }));
+          mcpShapedTools.push(tool);
+          continue;
+        }
+        const wireName = isAdvertisableToolDefinition(tool) ? freeAliasWireName(tool.name) : undefined;
+        if (wireName !== undefined) {
+          reservedWire.add(wireName);
+          activeToolMap.set(tool.name, withHybridFields(tool, { ccTool: wireName, translateArgs: (a) => a, translateBack: (a) => a }));
+          mcpShapedTools.push({ ...tool, name: wireName });
+          continue;
+        }
+      }
       // A CC client's OWN tools map to THEMSELVES (identity), and this OVERRIDES
       // TOOL_MAP. Two failure modes it fixes, both seen via the dock:
       //  1. TOOL_MAP's lowercase cross-client aliases mistranslate a CC tool —
@@ -2189,10 +2282,9 @@ export function buildCCRequest(
         || (CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name) && isAnthropicDefinedTool(t))
       ));
     const declaredNames = new Set(clientTools.map((t) => t.name));
-    const uncarried: Array<{ name: string; reason: string }> = [];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      if (CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native (union) / MCP (identity in pass 1) or mapped
+      if (CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name) || activeToolMap.has(tool.name as string) || TOOL_MAP[name]) continue; // CC-native (union) / MCP (identity in pass 1), carried in pass 1, or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
       if (namesCCTool) {
@@ -2383,7 +2475,10 @@ export function buildCCRequest(
         const name = (t.name as string | undefined)?.toLowerCase();
         return name !== undefined && !ccNames.has(name);
       });
-      ccRequest.tools = [...CC_TOOL_DEFINITIONS, ...appended];
+      ccRequest.tools = [
+        ...CC_TOOL_DEFINITIONS.map((t) => withClientRequiredFields(t, clientDeclarationOf(clientTools, t.name))),
+        ...appended,
+      ];
     } else {
       // Advertise only the CC-native tools the client actually declared.
       // Substituting the FULL CC template here makes the model emit a tool_use
@@ -2450,7 +2545,10 @@ export function buildCCRequest(
       );
       // CC sends its own tools in name order, so a client's definition of one
       // takes its place among them: `advisor` goes first, not after `Read`.
-      const natives = [...availableCC, ...clientOwnNative]
+      const natives = [
+        ...availableCC.map((t) => withClientRequiredFields(t, clientDeclarationOf(clientTools, t.name))),
+        ...clientOwnNative,
+      ]
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
       // Client tools outside CC's set follow the MCP tools, under the
       // MCP-shaped names the tool map gave them.
@@ -2619,6 +2717,9 @@ function buildReverseLookup(toolMap: Map<string, ToolMapping>): Map<string, { cl
   for (const [clientName, mapping] of toolMap) {
     if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) {
       identityClaimed.add(mapping.ccTool);
+      // The client name spelled exactly as the wire name keeps the slot over
+      // a case-only variant of it, whichever was declared first.
+      if (reverseMap.get(mapping.ccTool)?.clientName === mapping.ccTool) continue;
       reverseMap.set(mapping.ccTool, { clientName, mapping });
     }
   }
