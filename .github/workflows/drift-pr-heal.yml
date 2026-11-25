@@ -34,8 +34,10 @@ name: Drift PR heal (conflict + version collision)
 # open drift PR holds the version on its branch, skipped or not, so a renumber
 # avoids all of them, and a push waits for a new plan when the open drift PRs
 # or their branches changed during the run (scripts/drift-heal-plan.mjs). A
-# review that starts after the query that would have listed it, or a branch
-# that moves after the last read of origin, is not seen.
+# PR whose branch is also another open PR's head is skipped too: a push would
+# move both. A review that starts after the query that would have listed it, a
+# drift PR opened after the last read of the PR list, or a branch pushed or
+# moved after the last read of origin, is not seen.
 #
 # REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
 # the two-file shape our automation produces and exits 1 on anything else;
@@ -187,19 +189,19 @@ jobs:
             done | jq -s 'add // {}' > "$plan_dir/expected.json"
             node "$plan_js" changed "$plan_dir/expected.json" "$plan_dir/drift-now.json" "$1" "$2"
           }
-          # The planned drift branches as origin has them now, against the plan: the
-          # first that moved, or nothing. Origin has this run's own pushes at once, so
-          # only the planned head counts. Read as close to the push as the step can.
+          # Every drift branch as origin has it now, against the plan: the first that
+          # moved, appeared or went, or nothing. Each planned PR's branch must be at its
+          # planned head (or the head this run pushed: origin has a push at once), every
+          # other drift branch as the plan's read of origin had it, and none new: a new
+          # branch is a drift PR about to open at a version the plan did not see. Read
+          # as close to the push as the step can.
           refs_changed() {
-            local k now
-            git ls-remote origin 'refs/heads/bot/*' > "$plan_dir/refs-now.txt" || { echo "the drift branches could not be read from origin"; return 0; }
+            local k
+            git ls-remote --heads origin > "$plan_dir/refs-now.txt" || { echo "the branches could not be read from origin"; return 0; }
             for k in "${!planned[@]}"; do
-              now=$(awk -v r="refs/heads/${branch_of[$k]}" '$2 == r { print $1 }' "$plan_dir/refs-now.txt")
-              if [ "$now" != "${planned[$k]}" ]; then
-                echo "${branch_of[$k]} (#$k) is at ${now:-nothing} on origin"
-                return 0
-              fi
-            done
+              jq -n --arg b "${branch_of[$k]}" --arg o "${planned[$k]}" '{($b): $o}'
+            done | jq -s 'add // {}' > "$plan_dir/planned-refs.json"
+            node "$plan_js" refs "$plan_dir/refs-plan.txt" "$plan_dir/refs-now.txt" "$plan_dir/planned-refs.json"
           }
 
           # The version each open drift PR holds, read at the commit the list names.
@@ -231,6 +233,18 @@ jobs:
             planned[$n]="$oid"
             branch_of[$n]="$h"
           done
+          # Every drift branch as origin has it now: the baseline refs_changed compares
+          # with before each push. A planned branch that is not at its planned head here
+          # moved since the list, and is left for the next run.
+          if ! git ls-remote --heads origin > "$plan_dir/refs-plan.txt"; then
+            echo "Plan incomplete: the branches could not be read from origin. Nothing healed."
+            exit 1
+          fi
+          moved=$(refs_changed)
+          if [ -n "$moved" ]; then
+            echo "Plan incomplete: $moved since the list was read. Nothing healed; the next run lists it again."
+            exit 0
+          fi
           # The versions every open drift PR but #$1 holds, as a JSON list.
           held_by_others() {
             local k
@@ -249,6 +263,17 @@ jobs:
             head=$(printf '%s' "$candidates" | jq -r ".[$i].headRefName")
             base=$(printf '%s' "$candidates" | jq -r ".[$i].baseRefName")
             echo "=== #$pr ($head onto $base) ==="
+
+            # Two open PRs from one branch (to two bases, say) share its package.json, so
+            # no renumber gives them two versions, and a push moves both: the other's
+            # review is thrown away. Such a branch is left as it is, and its version stays
+            # held.
+            shared=$(jq -r --arg h "$head" --argjson n "$pr" '[.[] | select(.headRefName == $h and .number != $n) | "#\(.number) onto \(.baseRefName)"] | join(", ")' <<< "$drift")
+            if [ -n "$shared" ]; then
+              echo "  SKIPPED: its branch is also the head of $shared; a push would move both"
+              skipped=$((skipped + 1))
+              continue
+            fi
 
             git fetch origin "$head" "$base" --quiet
             git checkout -q -B "$head" "origin/$head"
@@ -424,17 +449,6 @@ jobs:
               floor="$head_ver"
               continue
             fi
-            # The versions stepped over were read from the open drift PRs as the plan
-            # found them. If that set or a head in it changed since (a draft renumbered,
-            # a drift PR opened), no push is made from the old plan; the next run plans
-            # again.
-            change=$(plan_changed "$pr" "$base")
-            if [ -n "$change" ]; then
-              echo "  STOPPED: the open drift PRs changed during the run ($change); nothing more is healed, the next run plans again"
-              git reset -q --hard "origin/$head"
-              echo "healed=$healed refused=$refused skipped=$skipped"
-              exit 0
-            fi
             # Redline may have started on this head while it was healed here: check
             # again just before the push, and leave the branch as it was if so.
             busy=$(redline_busy "$pr" "${planned[$pr]}")
@@ -444,8 +458,20 @@ jobs:
               skipped=$((skipped + 1))
               continue
             fi
+            # The versions stepped over were read from the open drift PRs as the plan
+            # found them. If that set or a head in it changed since (a draft renumbered,
+            # a drift PR opened), no push is made from the old plan; the next run plans
+            # again. Read after the Redline check, which takes the longest.
+            change=$(plan_changed "$pr" "$base")
+            if [ -n "$change" ]; then
+              echo "  STOPPED: the open drift PRs changed during the run ($change); nothing more is healed, the next run plans again"
+              git reset -q --hard "origin/$head"
+              echo "healed=$healed refused=$refused skipped=$skipped"
+              exit 0
+            fi
             # Last, the branches themselves: a sibling that moved since the plan (onto the
-            # version chosen here, say) while the PR list still shows its old head.
+            # version chosen here, say) while the PR list still shows its old head, or a
+            # drift branch pushed for a PR not open yet.
             moved=$(refs_changed)
             if [ -n "$moved" ]; then
               echo "  STOPPED: a drift branch changed during the run ($moved); nothing more is healed, the next run plans again"

@@ -386,7 +386,43 @@ console.log('\n=== a sibling branch that moves onto the chosen version while the
     sideEffects: [{ key: 'redline.yml|queued', call: 3, git: ['--git-dir', fx.origin, 'update-ref', 'refs/heads/bot/cc-drift-s', moved] }],
   });
   check('p1 is not pushed, and the run ends cleanly and says which branch moved',
-    r.status === 0 && tipOf(fx, 'bot/cc-drift-p1') === p1 && /STOPPED: a drift branch changed during the run \(bot\/cc-drift-s \(#72\) is at/.test(r.out), r.out);
+    r.status === 0 && tipOf(fx, 'bot/cc-drift-p1') === p1 && /STOPPED: a drift branch changed during the run \(bot\/cc-drift-s is at [0-9a-f]{7} on origin, not [0-9a-f]{7}\)/.test(r.out), r.out);
+}
+
+console.log('\n=== a new drift branch, and its PR, during the last Redline check ===');
+for (const withPr of [false, true]) {
+  const fx = fixture();
+  const p1 = draft(fx, 'bot/cc-drift-p1', fx.old, '1.0.5', 'change p1');
+  releaseMaster(fx, '1.0.5');
+  // A new drift branch at 1.0.6, the version p1 will choose, parked on origin until the run.
+  const z = draft(fx, 'bot/parked-z', 'master', '1.0.6', 'change z');
+  const prs = [pr(81, 'bot/cc-drift-p1', p1, 'DIRTY')];
+  const r = heal(fx, {
+    prs,
+    ...(withPr ? { prsLater: [...prs, pr(82, 'bot/cc-drift-z', z, 'CLEAN')], prsLaterOnEffect: true } : {}),
+    runs: [],
+    // The drafter pushes bot/cc-drift-z (and opens its PR) during p1's last Redline check.
+    sideEffects: [{ key: 'redline.yml|queued', call: 3, git: ['--git-dir', fx.origin, 'update-ref', 'refs/heads/bot/cc-drift-z', z], showLater: withPr }],
+  });
+  check(withPr
+    ? 'a drift PR opened on a new branch during the last Redline check: the PR list read after it stops the run, and p1 is not pushed'
+    : 'a new drift branch pushed during the last Redline check, its PR not open yet: the read of every drift branch stops the run, and p1 is not pushed',
+  r.status === 0 && tipOf(fx, 'bot/cc-drift-p1') === p1
+    && (withPr ? /STOPPED: the open drift PRs changed during the run \(#82 was opened\)/ : /STOPPED: a drift branch changed during the run \(bot\/cc-drift-z appeared on origin/).test(r.out), r.out);
+}
+
+console.log('\n=== one branch, two open PRs ===');
+{
+  const fx = fixture();
+  releaseMaster(fx, '1.0.5');
+  const sh = draft(fx, 'bot/cc-drift-sh', fx.old, '1.0.5', 'change sh');
+  const o = draft(fx, 'bot/cc-drift-o', fx.old, '1.0.5', 'change o');
+  // A backport PR from the same branch onto release, besides the PR onto master.
+  const r = heal(fx, { prs: [pr(61, 'bot/cc-drift-sh', sh, 'DIRTY'), pr(62, 'bot/cc-drift-sh', sh, 'DIRTY', { baseRefName: 'release' }), pr(63, 'bot/cc-drift-o', o, 'DIRTY')], runs: [] });
+  check('both PRs of the shared branch are skipped and the branch is left as it was',
+    r.status === 0 && tipOf(fx, 'bot/cc-drift-sh') === sh && /SKIPPED: its branch is also the head of #62 onto release; a push would move both/.test(section(r.out, 61))
+    && /SKIPPED: its branch is also the head of #61 onto master/.test(section(r.out, 62)), r.out);
+  check('the other PR is healed clear of the 1.0.5 the shared branch holds: 1.0.6', versionOf(fx, 'bot/cc-drift-o') === '1.0.6' && /HEALED/.test(section(r.out, 63)), r.out);
 }
 
 console.log('\n=== a candidate that moves during the run to a branch with no version: the run fails ===');

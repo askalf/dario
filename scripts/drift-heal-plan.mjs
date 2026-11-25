@@ -16,13 +16,15 @@
 //   changed  Has the set of open drift PRs, or a head among them, changed since the plan, or has the
 //            PR about to be pushed become a draft or moved to another base? The versions the floor
 //            avoids were read from that set, so a push waits for a new plan.
+//   refs     Has any drift branch on origin changed since the plan: moved, appeared or gone? A new
+//            branch is a drift PR about to open, at a version the plan did not see.
 //
-// What this cannot see: a review or fix that starts after the query that would have listed it, and
-// a sibling branch that moves after the workflow's last read of origin, in the moments before the
-// push. Redline then drops that review and reads the new head, one round later. A sibling that
-// moved onto the pushed version keeps it until one of the two becomes a candidate again
-// (conflicting or behind its base), when a later run renumbers it; while both stay up to date, the
-// version gate refuses to arm the second.
+// What this cannot see: a review or fix that starts after the last query that would have listed it,
+// a drift PR opened after the workflow's last read of the PR list, and a drift branch pushed or
+// moved after its last read of origin, in the moments before the push. Redline then drops that
+// review and reads the new head, one round later. A sibling that took the pushed version keeps it
+// until one of the two becomes a candidate again (conflicting or behind its base), when a later run
+// renumbers it; while both stay up to date, the version gate refuses to arm the second.
 //
 // CLI. The workflow copies this file and _drift-patch-helpers.mjs out of the checkout before its
 // loop, since each candidate branch is checked out in turn and may predate them.
@@ -39,6 +41,10 @@
 //        Prints what changed, or nothing. expected.json maps each planned PR number to the heads
 //        it may show now; drift.json is the open drift PRs as listed now; <pr> and <base> name the
 //        PR about to be pushed and the base it was healed onto.
+//   node drift-heal-plan.mjs refs <baseline.txt> <now.txt> <planned.json>
+//        Prints the first drift branch that changed, or nothing. The two .txt files are
+//        `git ls-remote --heads origin` as the plan read it and as it reads now; planned.json
+//        maps each planned PR's branch to the head origin must show for it now.
 //
 // Exit 0 with the answer on stdout; exit 2 on bad arguments or unreadable input, which the
 // workflow's `set -e` turns into a failed run rather than a guess.
@@ -62,6 +68,9 @@ export const ACTIVE_STATUSES = ['requested', 'pending', 'waiting', 'queued', 'in
 export const FIX_RESULT_WAIT_MS = 6 * 3_600_000;
 /** The most pages of 100 one list is read to; a list that does not end within them counts as unread. */
 export const MAX_PAGES = 10;
+/** The branch names of the drift bots' PRs, the filter drift-pr-heal.yml lists them by. */
+export const DRIFT_PREFIXES = ['bot/cc-drift-', 'bot/template-label-', 'bot/template-rebake-'];
+const RUN_STATUSES = [...ACTIVE_STATUSES, 'completed'];
 
 const VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -77,13 +86,34 @@ export function compareVersions(a, b) {
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * One list of a workflow's runs, every page, as { workflow, id, event, status, conclusion,
- * display_title, head_sha, updated_at } each, or null when it could not be read in full: a page
- * that failed or was not a run list, a list that does not end within MAX_PAGES pages, pages that
- * do not add up to the total the first page gave, or a run id twice. `get(path)` answers the
- * parsed JSON of one GitHub API path, or throws; a throw is noted on stderr for the run's log.
+ * One run as a list gives it, with what classifying it needs: a positive integer id, an event, a
+ * known status, a run-name and a 40-hex head commit, and a conclusion that is a string or null.
+ * Null for anything else, so a malformed row never reads as a run that holds nothing.
+ */
+export function runRow(r, workflow) {
+  if (!r || typeof r !== 'object') return null;
+  if (!Number.isSafeInteger(r.id) || r.id <= 0) return null;
+  if (typeof r.event !== 'string' || r.event === '' || !RUN_STATUSES.includes(r.status)) return null;
+  if (typeof r.display_title !== 'string' || typeof r.head_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(r.head_sha)) return null;
+  if (r.conclusion !== undefined && r.conclusion !== null && typeof r.conclusion !== 'string') return null;
+  return {
+    workflow, id: r.id, event: r.event, status: r.status, conclusion: r.conclusion ?? null,
+    display_title: r.display_title, head_sha: r.head_sha.toLowerCase(), updated_at: typeof r.updated_at === 'string' ? r.updated_at : null,
+  };
+}
+
+/**
+ * One list of a workflow's runs, every page, as runRow gives each, or null when it could not be read
+ * in full: a page that failed or was not a run list, a malformed row, a list that does not end
+ * within MAX_PAGES pages, pages that do not add up to the total the first page gave, or a run id
+ * twice. Each of those is noted on stderr, naming the list and page, for the run's log. `get(path)`
+ * answers the parsed JSON of one GitHub API path, or throws.
  */
 export function readRunList(get, repo, workflow, query) {
+  const unread = (page, why) => {
+    process.stderr.write(`drift-heal-plan: ${workflow} runs (${query}) page ${page}: ${why}\n`);
+    return null;
+  };
   const rows = [];
   let total = null;
   for (let page = 1; page <= MAX_PAGES; page++) {
@@ -91,28 +121,26 @@ export function readRunList(get, repo, workflow, query) {
     try {
       data = get(`repos/${repo}/actions/workflows/${workflow}/runs?${query}&per_page=100&page=${page}`);
     } catch (err) {
-      const why = String(err?.stderr || err?.message || err).trim().split('\n')[0];
-      process.stderr.write(`drift-heal-plan: ${workflow} runs (${query}) page ${page} could not be read: ${why}\n`);
-      return null;
+      return unread(page, `could not be read: ${String(err?.stderr || err?.message || err).trim().split('\n')[0]}`);
     }
     if (page === 1) {
       total = data?.total_count;
-      if (!Number.isInteger(total) || total < 0) return null;
+      if (!Number.isInteger(total) || total < 0) return unread(page, 'no total_count');
     }
     const list = data?.workflow_runs;
-    if (!Array.isArray(list)) return null;
-    for (const r of list) {
-      rows.push({
-        workflow, id: r?.id, event: r?.event, status: r?.status, conclusion: r?.conclusion ?? null,
-        display_title: r?.display_title ?? '', head_sha: r?.head_sha ?? '', updated_at: r?.updated_at ?? null,
-      });
+    if (!Array.isArray(list)) return unread(page, 'no workflow_runs list');
+    for (const [i, r] of list.entries()) {
+      const row = runRow(r, workflow);
+      if (row === null) return unread(page, `row ${i + 1} is not a run that can be classified`);
+      rows.push(row);
     }
     if (list.length < 100) {
-      if (rows.length !== total || new Set(rows.map((r) => r.id)).size !== rows.length) return null;
+      if (rows.length !== total) return unread(page, `${rows.length} runs read, the first page said ${total}`);
+      if (new Set(rows.map((r) => r.id)).size !== rows.length) return unread(page, 'a run id twice');
       return rows;
     }
   }
-  return null;
+  return unread(MAX_PAGES, `the list does not end within ${MAX_PAGES} pages`);
 }
 
 /** Every run of REDLINE_WORKFLOWS that has not finished, by each ACTIVE_STATUSES status: one complete scan, or null. */
@@ -253,6 +281,36 @@ export function planChange(expected, drift, candidate = null) {
   return '';
 }
 
+/** The drift branches in `git ls-remote --heads` output, as a Map of branch name to head. */
+export function driftRefs(text) {
+  const out = new Map();
+  for (const line of String(text).split('\n')) {
+    const m = /^([0-9a-f]{40})\s+refs\/heads\/(\S+)$/.exec(line.trim());
+    if (m && DRIFT_PREFIXES.some((p) => m[2].startsWith(p))) out.set(m[2], m[1]);
+  }
+  return out;
+}
+
+/**
+ * The first drift branch that changed on origin since the plan, or '' when none did. `baseline` and
+ * `now` are `git ls-remote --heads` output as the plan read it and as it reads now; `planned` maps
+ * each planned PR's branch to the head origin must show for it (the planned head, or the head this
+ * run pushed: origin has a push at once). Every other drift branch must be as the baseline had it,
+ * and no new one may appear.
+ */
+export function refsChange(baseline, now, planned) {
+  const was = driftRefs(baseline);
+  const is = driftRefs(now);
+  const want = new Map(was);
+  for (const [b, oid] of Object.entries(planned)) want.set(b, String(oid));
+  for (const [b, oid] of want) {
+    if (!is.has(b)) return `${b} is gone from origin`;
+    if (is.get(b) !== oid) return `${b} is at ${is.get(b).slice(0, 7)} on origin, not ${oid.slice(0, 7)}`;
+  }
+  for (const [b, oid] of is) if (!want.has(b)) return `${b} appeared on origin at ${oid.slice(0, 7)}`;
+  return '';
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -301,7 +359,14 @@ export function main(argv, out = (s) => process.stdout.write(s), now = Date.now(
       if (change) out(`${change}\n`);
       return 0;
     }
-    process.stderr.write('usage: drift-heal-plan.mjs check <owner/repo> <pr> <head-sha> | busy <owner/repo> <pr> <head-sha> <runs.json> | floor <floor> <own-version> <held.json> | changed <expected.json> <drift.json> [<pr> <base>]\n');
+    if (cmd === 'refs' && args.length === 3) {
+      const planned = readJson(args[2]);
+      if (!planned || typeof planned !== 'object' || Array.isArray(planned)) throw new Error('planned.json is not a map');
+      const change = refsChange(readFileSync(args[0], 'utf8'), readFileSync(args[1], 'utf8'), planned);
+      if (change) out(`${change}\n`);
+      return 0;
+    }
+    process.stderr.write('usage: drift-heal-plan.mjs check <owner/repo> <pr> <head-sha> | busy <owner/repo> <pr> <head-sha> <runs.json> | floor <floor> <own-version> <held.json> | changed <expected.json> <drift.json> [<pr> <base>] | refs <baseline.txt> <now.txt> <planned.json>\n');
     return 2;
   } catch (err) {
     process.stderr.write(`drift-heal-plan: ${err instanceof Error ? err.message : String(err)}\n`);

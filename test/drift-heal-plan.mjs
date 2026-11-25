@@ -6,8 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ACTIVE_STATUSES, busyReason, compareVersions, FIX_RESULT_WAIT_MS, main, MAX_PAGES, pickFloor, planChange,
-  readRunList, readTwice, REDLINE_WORKFLOWS, redlineRuns, scanActive,
+  ACTIVE_STATUSES, busyReason, compareVersions, driftRefs, FIX_RESULT_WAIT_MS, main, MAX_PAGES, pickFloor, planChange,
+  readRunList, readTwice, REDLINE_WORKFLOWS, redlineRuns, refsChange, runRow, scanActive,
 } from '../scripts/drift-heal-plan.mjs';
 
 let pass = 0, fail = 0;
@@ -57,6 +57,31 @@ check('the workflows and statuses read: the review, the fix and the verdict post
     && readRunList(() => ({ workflow_runs: [] }), REPO, 'redline.yml', 'status=queued') === null);
   const full = Array.from({ length: MAX_PAGES * 100 }, (_, i) => queued(i + 1));
   check(`a list that does not end within ${MAX_PAGES} pages is unread`, readRunList(fakeApi({ 'redline.yml?status=queued': full }).get, REPO, 'redline.yml', 'status=queued') === null);
+  // A malformed row inside an otherwise valid page: the count and ids add up, but the row cannot be
+  // classified, so the list is unread rather than a run that holds nothing.
+  const page = (row) => () => ({ total_count: 2, workflow_runs: [queued(1), row] });
+  const malformed = [null, 'run', { ...queued(2), id: '2' }, { ...queued(2), id: 0 }, { ...queued(2), event: undefined }, { ...queued(2), event: '' },
+    { ...queued(2), status: 'unknown' }, { ...queued(2), head_sha: undefined }, { ...queued(2), head_sha: 'abc' }, { ...queued(2), display_title: undefined }, { ...queued(2), conclusion: 3 }];
+  check('a malformed row inside a valid page (no row, no id, no event, an unknown status, no head commit, no run-name, a conclusion that is not text): unread',
+    malformed.every((row) => readRunList(page(row), REPO, 'redline.yml', 'status=queued') === null));
+  check('runRow keeps what classifying needs, lowercases the head and leaves a missing finish null',
+    JSON.stringify(runRow({ ...queued(5), head_sha: 'E'.repeat(40), updated_at: undefined }, 'redline.yml'))
+      === JSON.stringify({ workflow: 'redline.yml', id: 5, event: 'pull_request', status: 'queued', conclusion: null, display_title: 'x', head_sha: 'e'.repeat(40), updated_at: null }));
+  // Every list that is unread says why on stderr, naming the workflow, the query and the page.
+  const notes = [];
+  const write = process.stderr.write;
+  process.stderr.write = (s) => { notes.push(String(s)); return true; };
+  try {
+    readRunList(() => ({ total_count: 0 }), REPO, 'redline-post.yml', 'status=pending');
+    readRunList(() => ({ workflow_runs: [] }), REPO, 'redline.yml', 'status=waiting');
+    readRunList(page(null), REPO, 'redline-fix.yml', 'status=queued');
+    readRunList(() => { throw new Error('HTTP 502'); }, REPO, 'redline.yml', 'status=queued');
+  } finally {
+    process.stderr.write = write;
+  }
+  check('each unread list is noted on stderr with its workflow, query, page and why',
+    notes.length === 4 && /redline-post\.yml runs \(status=pending\) page 1: no workflow_runs list/.test(notes[0]) && /redline\.yml runs \(status=waiting\) page 1: no total_count/.test(notes[1])
+    && /redline-fix\.yml runs \(status=queued\) page 1: row 2 is not a run/.test(notes[2]) && /page 1: could not be read: HTTP 502/.test(notes[3]), notes.join(' | '));
 }
 {
   const { get } = fakeApi({ 'redline.yml?status=queued': [queued(1)] });
@@ -143,6 +168,22 @@ check('a drift PR closed since: a change', /#12 is no longer open/.test(planChan
   check('the PR about to be pushed now targets another base, its head unchanged: a change', /#11 now targets release/.test(planChange(plan, listed({ baseRefName: 'release' }), { number: 11, base: 'master' })));
 }
 
+console.log('\n=== refsChange ===');
+{
+  const A = 'a'.repeat(40), B = 'b'.repeat(40), C = 'c'.repeat(40), D = 'd'.repeat(40);
+  const ls = (rows) => rows.map(([oid, b]) => `${oid}\trefs/heads/${b}`).join('\n') + '\n';
+  const base = ls([[A, 'bot/cc-drift-a'], [B, 'bot/template-label-x'], [C, 'master'], [D, 'feature/y']]);
+  check('only the drift branches are read', JSON.stringify([...driftRefs(base)]) === JSON.stringify([['bot/cc-drift-a', A], ['bot/template-label-x', B]]));
+  check('nothing changed: no change', refsChange(base, base, { 'bot/cc-drift-a': A }) === '');
+  check('a branch this run pushed is at its pushed head: no change', refsChange(base, ls([[D, 'bot/cc-drift-a'], [B, 'bot/template-label-x']]), { 'bot/cc-drift-a': D }) === '');
+  check('a planned branch not at the head it must show: a change', /bot\/cc-drift-a is at aaaaaaa on origin, not ddddddd/.test(refsChange(base, base, { 'bot/cc-drift-a': D })));
+  check('another drift branch that moved: a change', /bot\/template-label-x is at ccccccc/.test(refsChange(base, ls([[A, 'bot/cc-drift-a'], [C, 'bot/template-label-x']]), { 'bot/cc-drift-a': A })));
+  check('a drift branch that appeared (a PR about to open): a change',
+    /bot\/template-rebake-z appeared on origin at ddddddd/.test(refsChange(base, ls([[A, 'bot/cc-drift-a'], [B, 'bot/template-label-x'], [D, 'bot/template-rebake-z']]), { 'bot/cc-drift-a': A })));
+  check('a drift branch that went: a change', /bot\/template-label-x is gone from origin/.test(refsChange(base, ls([[A, 'bot/cc-drift-a']]), { 'bot/cc-drift-a': A })));
+  check('other branches that move, appear or go: no change', refsChange(base, ls([[A, 'bot/cc-drift-a'], [B, 'bot/template-label-x'], [A, 'master'], [A, 'parked-s']]), { 'bot/cc-drift-a': A }) === '');
+}
+
 console.log('\n=== the command line ===');
 {
   const dir = mkdtempSync(join(tmpdir(), 'dario-heal-plan-'));
@@ -172,6 +213,17 @@ console.log('\n=== the command line ===');
     out = '';
     writeFileSync(drift, JSON.stringify([{ number: 11, headRefOid: HEAD }]));
     check('changed on no change prints nothing', main(['changed', expected, drift], say) === 0 && out === '');
+    const refsA = join(dir, 'refs-a.txt');
+    const refsB = join(dir, 'refs-b.txt');
+    const plannedRefs = join(dir, 'planned.json');
+    writeFileSync(refsA, `${HEAD}\trefs/heads/bot/cc-drift-a\n`);
+    writeFileSync(refsB, `${HEAD}\trefs/heads/bot/cc-drift-a\n${OTHER}\trefs/heads/bot/cc-drift-new\n`);
+    writeFileSync(plannedRefs, JSON.stringify({ 'bot/cc-drift-a': HEAD }));
+    out = '';
+    check('refs prints the change', main(['refs', refsA, refsB, plannedRefs], say) === 0 && /bot\/cc-drift-new appeared/.test(out), out);
+    out = '';
+    check('refs on no change prints nothing', main(['refs', refsA, refsA, plannedRefs], say) === 0 && out === '');
+    check('refs with a planned file that is not a map: exit 2', main(['refs', refsA, refsA, runs], say) === 2);
     check('bad arguments: exit 2',
       main(['busy', REPO, 'x', HEAD, runs], say) === 2 && main(['check', REPO, 'x', HEAD], say) === 2 && main(['check', 'not a repo', '1', HEAD], say) === 2
       && main(['floor', '1.0.5'], say) === 2 && main(['floor', '1.0.5', 'nope', held], say) === 2 && main(['changed', drift, drift], say) === 2);
