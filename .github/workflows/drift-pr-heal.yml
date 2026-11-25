@@ -32,9 +32,10 @@ name: Drift PR heal (conflict + version collision)
 # fix or verdict post not finished at its head, or a fix run finished there
 # and not yet answered, is skipped, and the next run heals it. Every open
 # drift PR holds the version on its branch, skipped or not, so a renumber
-# steps over all of them, and a push waits for a new plan when the open drift
-# PRs changed during the run (scripts/drift-heal-plan.mjs). A review that
-# starts in the seconds between the last check and the push is not seen.
+# avoids all of them, and a push waits for a new plan when the open drift PRs
+# or their branches changed during the run (scripts/drift-heal-plan.mjs). A
+# review that starts, or a branch that moves, in the moments between the last
+# check and the push is not seen.
 #
 # REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
 # the two-file shape our automation produces and exits 1 on anything else;
@@ -158,14 +159,12 @@ jobs:
           cp scripts/drift-heal-plan.mjs scripts/_drift-patch-helpers.mjs "$plan_dir/"
           plan_js="$plan_dir/drift-heal-plan.mjs"
 
-          # Redline's runs as one JSON list, or `null` when a list could not be read
-          # in full, which drift-heal-plan.mjs counts as busy: every run of the three
-          # workflows not finished, by each such status and every page of it, and
-          # the fix runs created in the last day that finished (the platform's fix
-          # dispatcher answers a finished fix run after it, and until it does the
-          # head the run read must not move). Read with the job's own token.
+          # Every run of the three Redline workflows that has not finished, by each
+          # such status and every page of it, as one JSON list, or `null` when a list
+          # could not be read in full, which drift-heal-plan.mjs counts as busy. Read
+          # with the job's own token.
           redline_runs() {
-            local out='[]' wf st page raw rows n kept cutoff
+            local out='[]' wf st page raw rows n
             for wf in redline.yml redline-fix.yml redline-post.yml; do
               for st in queued in_progress waiting requested pending; do
                 page=1
@@ -181,28 +180,33 @@ jobs:
                 done
               done
             done
-            cutoff=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:%SZ)
-            page=1
+            echo "$out"
+          }
+          # Every fix run at head $1, any status, every page, as a JSON list, or `null`.
+          # The platform's fix dispatcher answers a finished fix run after it, and until
+          # it does the head the run read must not move. Read by head, so a run created
+          # long ago and re-run lately, or one that waited long in the queue, is here.
+          fix_runs_at() {
+            local out='[]' page=1 raw rows n
             while :; do
-              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?status=completed&per_page=100&page=$page") || { echo null; return 0; }
-              rows=$(jq -c --arg c "$cutoff" '[.workflow_runs[] | select(.created_at >= $c)
+              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?head_sha=$1&per_page=100&page=$page") || { echo null; return 0; }
+              rows=$(jq -c '[.workflow_runs[]
                      | {workflow: "redline-fix.yml", id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
               out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
-              n=$(jq '.workflow_runs | length' <<< "$raw")
-              kept=$(jq 'length' <<< "$rows")
-              if [ "$n" -lt 100 ] || [ "$kept" -lt "$n" ]; then break; fi
+              n=$(jq 'length' <<< "$rows")
+              if [ "$n" -lt 100 ]; then break; fi
               page=$((page + 1))
               if [ "$page" -gt 10 ]; then echo null; return 0; fi
             done
             echo "$out"
           }
-          # The first lines of askalf's comments on PR #$1, every page, as a JSON
-          # list, or `null` when they could not be read in full.
+          # askalf's comments on PR #$1 as { line, at } (first line, when posted), every
+          # page, as a JSON list, or `null` when they could not be read in full.
           fix_comments() {
             local out='[]' page=1 raw rows n
             while :; do
               raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/issues/$1/comments?per_page=100&page=$page") || { echo null; return 0; }
-              rows=$(jq -c '[.[] | select(.user.login == "askalf") | ((.body // "") | split("\n")[0])]' <<< "$raw") || { echo null; return 0; }
+              rows=$(jq -c '[.[] | select(.user.login == "askalf") | {line: ((.body // "") | split("\n")[0]), at: .created_at}]' <<< "$raw") || { echo null; return 0; }
               out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
               n=$(jq 'length' <<< "$raw")
               if [ "$n" -lt 100 ]; then break; fi
@@ -214,7 +218,14 @@ jobs:
           # Why Redline is at work on PR #$1 at head $2, or nothing. The PR's comments
           # are read only when a finished fix run names it.
           redline_busy() {
-            redline_runs > "$plan_dir/runs.json"
+            local runs fixes
+            runs=$(redline_runs)
+            fixes=$(fix_runs_at "$2")
+            if [ "$runs" = null ] || [ "$fixes" = null ]; then
+              echo null > "$plan_dir/runs.json"
+            else
+              jq -c --argjson more "$fixes" '. + $more' <<< "$runs" > "$plan_dir/runs.json"
+            fi
             if jq -e --arg t "Redline fix $REPO#$1 @ " 'type == "array" and any(.[]; .workflow == "redline-fix.yml" and .status == "completed" and ((.display_title // "") | startswith($t)))' "$plan_dir/runs.json" >/dev/null; then
               fix_comments "$1" > "$plan_dir/comments.json"
             else
@@ -228,16 +239,34 @@ jobs:
           plan_changed() {
             local k
             gh pr list --repo "$REPO" --state open --limit 1000 \
-              --json number,headRefName,headRefOid,headRepositoryOwner \
-              | jq -c --arg owner "${REPO%%/*}" '[.[]
+              --json number,headRefName,headRefOid,headRepositoryOwner > "$plan_dir/open-now.json"
+            if [ "$(jq 'length' "$plan_dir/open-now.json")" -ge 1000 ]; then
+              echo "the open PR list may be cut short (1000 or more)"
+              return 0
+            fi
+            jq -c --arg owner "${REPO%%/*}" '[.[]
                    | select(.headRepositoryOwner.login == $owner)
                    | select(.headRefName | startswith("bot/cc-drift-")
                             or startswith("bot/template-label-")
-                            or startswith("bot/template-rebake-"))]' > "$plan_dir/drift-now.json"
+                            or startswith("bot/template-rebake-"))]' "$plan_dir/open-now.json" > "$plan_dir/drift-now.json"
             for k in "${!planned[@]}"; do
               jq -n --arg k "$k" --arg a "${planned[$k]}" --arg b "${pushed_from[$k]:-}" '{($k): ([$a, $b] | map(select(. != "")))}'
             done | jq -s 'add // {}' > "$plan_dir/expected.json"
             node "$plan_js" changed "$plan_dir/expected.json" "$plan_dir/drift-now.json"
+          }
+          # The planned drift branches as origin has them now, against the plan: the
+          # first that moved, or nothing. Origin has this run's own pushes at once, so
+          # only the planned head counts. Read as close to the push as the step can.
+          refs_changed() {
+            local k now
+            git ls-remote origin 'refs/heads/bot/*' > "$plan_dir/refs-now.txt" || { echo "the drift branches could not be read from origin"; return 0; }
+            for k in "${!planned[@]}"; do
+              now=$(awk -v r="refs/heads/${branch_of[$k]}" '$2 == r { print $1 }' "$plan_dir/refs-now.txt")
+              if [ "$now" != "${planned[$k]}" ]; then
+                echo "${branch_of[$k]} (#$k) is at ${now:-nothing} on origin"
+                return 0
+              fi
+            done
           }
 
           # The version each open drift PR holds, read at the commit the list names.
@@ -247,6 +276,7 @@ jobs:
           declare -A held=()
           declare -A planned=()
           declare -A pushed_from=()
+          declare -A branch_of=()
           for j in $(seq 0 $(( $(jq 'length' <<< "$drift") - 1 ))); do
             n=$(jq -r ".[$j].number" <<< "$drift")
             h=$(jq -r ".[$j].headRefName" <<< "$drift")
@@ -266,6 +296,7 @@ jobs:
             fi
             held[$n]="$v"
             planned[$n]="$oid"
+            branch_of[$n]="$h"
           done
           # The versions every open drift PR but #$1 holds, as a JSON list.
           held_by_others() {
@@ -479,6 +510,15 @@ jobs:
               git reset -q --hard "origin/$head"
               skipped=$((skipped + 1))
               continue
+            fi
+            # Last, the branches themselves: a sibling that moved since the plan (onto the
+            # version chosen here, say) while the PR list still shows its old head.
+            moved=$(refs_changed)
+            if [ -n "$moved" ]; then
+              echo "  STOPPED: a drift branch changed during the run ($moved); nothing more is healed, the next run plans again"
+              git reset -q --hard "origin/$head"
+              echo "healed=$healed refused=$refused skipped=$skipped"
+              exit 0
             fi
             # A branch that is still the drafter's one commit is flattened onto the base as one commit
             # with that commit's subject. Any other branch keeps its commits and gets the merge as it

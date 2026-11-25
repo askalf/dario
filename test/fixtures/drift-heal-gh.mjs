@@ -6,6 +6,8 @@
 //        -> { workflow_runs }: the fixture.runs of <wf> with that status, 100 a page. A run is
 //           shown once <wf> and <s> have been listed `appearAfter` times (default 1). A workflow
 //           named in fixture.failRuns fails.
+//   gh api repos/<o>/<r>/actions/workflows/<wf>/runs?head_sha=<h>&per_page=100&page=<p>
+//        -> the fixture.runs of <wf> at that head, any status, counted under `<wf>|head`.
 //   gh api repos/<o>/<r>/issues/<n>/comments?per_page=100&page=<p>
 //        -> fixture.comments[n], 100 a page; fixture.failComments fails it.
 // fixture.sideEffects run git when a list is read: { key: '<wf>|<status>', call: k, git: [...] }
@@ -31,10 +33,10 @@ if (args[0] === 'pr' && args[1] === 'list') {
   process.exit(0);
 }
 
-const runs = args[0] === 'api' ? /^repos\/[^/]+\/[^/]+\/actions\/workflows\/([^/?]+)\/runs\?status=([a-z_]+)&per_page=100&page=(\d+)$/.exec(args[1] ?? '') : null;
+const runs = args[0] === 'api' ? /^repos\/[^/]+\/[^/]+\/actions\/workflows\/([^/?]+)\/runs\?(?:status=([a-z_]+)|head_sha=([0-9a-f]{40}))&per_page=100&page=(\d+)$/.exec(args[1] ?? '') : null;
 if (runs) {
-  const [, wf, status, page] = runs;
-  const key = `${wf}|${status}`;
+  const [, wf, status, headSha, page] = runs;
+  const key = status ? `${wf}|${status}` : `${wf}|head`;
   const n = Number(page) === 1 ? bump(key) : (counts[key] ?? 1);
   for (const e of fixture.sideEffects ?? []) {
     if (e.key === key && e.call === n && Number(page) === 1) execFileSync('git', e.git, { stdio: 'ignore' });
@@ -44,7 +46,7 @@ if (runs) {
     process.exit(1);
   }
   const shown = (fixture.runs ?? [])
-    .filter((r) => r.workflow === wf && r.status === status && (r.appearAfter ?? 1) <= n)
+    .filter((r) => r.workflow === wf && (status ? r.status === status : r.head_sha === headSha) && (r.appearAfter ?? 1) <= n)
     .map(({ workflow, appearAfter, ...r }) => r);
   process.stdout.write(JSON.stringify({ total_count: shown.length, workflow_runs: pageOf(shown, Number(page)) }));
   process.exit(0);

@@ -8,21 +8,24 @@
 //            the heal skips the PR, and the next run tries again.
 //   floor    The floor to pass renumber-release-version.mjs so that the version it leaves is held
 //            by no other open drift PR. Every open drift PR holds the version on its branch whatever
-//            its state (up to date, a draft, waiting on Redline), so a renumber steps over all of
-//            them, not only over the PRs healed earlier in the same run.
+//            its state (up to date, a draft, waiting on Redline), so a renumber avoids all of them,
+//            not only the PRs healed earlier in the same run. It takes the lowest free version above
+//            the floor, not one above the highest held.
 //   changed  Has the set of open drift PRs, or a head among them, changed since the plan? The
 //            versions the floor steps over were read from that set, so a push waits for a new plan.
 //
-// What this cannot see: a review that starts in the seconds between the last check and the push.
-// Redline then drops that review and reads the new head, one round later.
+// What this cannot see: a review that starts, or a sibling branch that moves, in the moments
+// between the workflow's last check and its push. Redline then drops that review and reads the
+// new head, one round later; a sibling that moved onto the pushed version is renumbered by the
+// next run.
 //
 // CLI. The workflow copies this file and _drift-patch-helpers.mjs out of the checkout before its
 // loop, since each candidate branch is checked out in turn and may predate them.
 //
 //   node drift-heal-plan.mjs busy <owner/repo> <pr> <head-sha> <runs.json> <comments.json>
 //        Prints why Redline is at work on that head, or nothing. runs.json is Redline's runs (see
-//        busyReason), or null when they could not be listed; comments.json the first lines of
-//        askalf's comments on the PR, or null when they could not be read.
+//        busyReason), or null when they could not be listed; comments.json askalf's comments on
+//        the PR as { line, at } (first line, created_at), or null when they could not be read.
 //   node drift-heal-plan.mjs floor <floor> <own-version> <held.json>
 //        Prints the floor to pass renumber-release-version.mjs. held.json is the list of the
 //        versions the other open drift PRs hold.
@@ -66,8 +69,9 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * Why Redline is at work on `headSha`, the head of PR `pr` in `repo` (owner/name), or '' when it
  * is not. `runs` are runs of REDLINE_WORKFLOWS, each
  * { workflow, id, event, status, conclusion, display_title, head_sha, updated_at }: every one not
- * finished, and the fix runs that finished lately. null (they could not be listed) counts as busy.
- * `comments` are the first lines of askalf's comments on the PR (null: they could not be read).
+ * finished, and every fix run at this head. null (they could not be listed) counts as busy.
+ * `comments` are askalf's comments on the PR as { line, at }: the first line and when it was
+ * posted (null: they could not be read).
  *
  *   - A verdict post (redline-post.yml) runs on workflow_run, at the default branch's head, so
  *     nothing in it names a PR. Any one not finished holds every PR.
@@ -77,9 +81,12 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *     this head (a short head names it by prefix).
  *   - A fix run that finished at this head still holds it until the platform answers it without
  *     moving the head: a comment `## Fix not applied at <head>`, `## Fix refused at <head>` or
- *     `## Description updated at <head>`. (A fix that was applied moved the head, so its run names
- *     an older one.) A cancelled or skipped run has nothing to apply, and past FIX_RESULT_WAIT_MS
- *     from its finish the head is free again.
+ *     `## Description updated at <head>` posted after the run's latest attempt finished, so the
+ *     answer to an earlier run at the same head does not release a retry there. (The platform
+ *     posts one comment per heading, so a retry refused the same way gets no new one, and holds
+ *     the head until the wait ends.) A fix that was applied moved the head, so its run names an
+ *     older one. A cancelled or skipped run has nothing to apply, and past FIX_RESULT_WAIT_MS from
+ *     the latest attempt's finish the head is free again.
  *   - A review on pull_request carries the PR's own title as its name, which any author writes,
  *     so its title says nothing. One not finished holds the PR when its head commit is this head.
  * A run for an older head of the PR does not hold it: Redline drops that review either way.
@@ -99,10 +106,12 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
     if (r.status === 'completed') {
       if (r.workflow !== 'redline-fix.yml' || r.event !== 'workflow_dispatch' || !namesThisHead(r, 'fix')) continue;
       if (r.conclusion === 'cancelled' || r.conclusion === 'skipped') continue;
-      const at = Date.parse(String(r.updated_at ?? ''));
-      if (Number.isFinite(at) && now - at >= FIX_RESULT_WAIT_MS) continue;
+      const finished = Date.parse(String(r.updated_at ?? ''));
+      if (Number.isFinite(finished) && now - finished >= FIX_RESULT_WAIT_MS) continue;
       if (!Array.isArray(comments)) return `${what} finished, and the PR's comments could not be read to see whether its fix was answered`;
-      if (comments.some((c) => FIX_RESULT_AT_HEAD.exec(String(c))?.[1] === head)) continue;
+      const answered = Number.isFinite(finished) && comments.some((c) =>
+        FIX_RESULT_AT_HEAD.exec(String(c?.line ?? ''))?.[1] === head && Date.parse(String(c?.at ?? '')) >= finished);
+      if (answered) continue;
       return `${what} finished, and its fix is not yet applied or refused at this head`;
     }
     if (r.workflow === 'redline-post.yml') return `${what} is posting a verdict`;

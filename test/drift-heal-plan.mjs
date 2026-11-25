@@ -46,12 +46,16 @@ check('a head that is not a commit id: busy (nothing is pushed on a guess)', bus
 
 console.log('\n=== busyReason: a fix run that finished, until the platform answers it ===');
 const done = (over) => run({ workflow: 'redline-fix.yml', status: 'completed', conclusion: 'success', display_title: `Redline fix ${REPO}#1936 @ ${HEAD}`, updated_at: '2026-11-25T21:40:00Z', ...over });
+const said = (line, at = '2026-11-25T21:45:00Z') => ({ line, at });
 check('a fix run finished at this head, not answered yet: busy', /not yet applied or refused at this head/.test(busy([done({})])));
 check('a fix run that failed is answered too before the head is free (the dispatcher refuses it with a comment)', busy([done({ conclusion: 'failure' })]) !== '');
-check('answered "Fix not applied at" this head: free', busy([done({})], [`## Fix not applied at ${HEAD}: refused`]) === '');
-check('answered "Fix refused at" this head: free', busy([done({})], [`## Fix refused at ${HEAD}: run 1 uploaded no fix artifact`]) === '');
-check('answered "Description updated at" this head: free', busy([done({})], [`## Description updated at ${HEAD}`]) === '');
-check('an answer for another head does not count: busy', busy([done({})], [`## Fix not applied at ${OTHER}: refused`]) !== '');
+check('answered "Fix not applied at" this head: free', busy([done({})], [said(`## Fix not applied at ${HEAD}: refused`)]) === '');
+check('answered "Fix refused at" this head: free', busy([done({})], [said(`## Fix refused at ${HEAD}: run 1 uploaded no fix artifact`)]) === '');
+check('answered "Description updated at" this head: free', busy([done({})], [said(`## Description updated at ${HEAD}`)]) === '');
+check('an answer for another head does not count: busy', busy([done({})], [said(`## Fix not applied at ${OTHER}: refused`)]) !== '');
+check('two attempts at one head, only the first answered: the answer posted before the second finished does not release it',
+  /not yet applied or refused/.test(busy([done({ id: 1, updated_at: '2026-11-25T21:00:00Z' }), done({ id: 2, updated_at: '2026-11-25T21:40:00Z' })], [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-25T21:05:00Z')])));
+check('a re-run whose latest attempt finished lately holds the head, however old the run', /not yet applied or refused/.test(busy([done({ updated_at: '2026-11-25T21:55:00Z' })], [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-23T10:00:00Z')])));
 check('the comments could not be read: busy', /comments could not be read/.test(busy([done({})], null)));
 check('finished longer ago than the wait: free', busy([done({ updated_at: new Date(NOW - FIX_RESULT_WAIT_MS - 60_000).toISOString() })]) === '');
 check('a finish time that cannot be read: busy (the wait is not assumed over)', busy([done({ updated_at: null })]) !== '');
