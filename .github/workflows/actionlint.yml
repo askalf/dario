@@ -29,7 +29,7 @@ jobs:
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 5
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@1d584fe464673b0fa066be22ed089eb3b161a06a # main 2026-11-24, askalf/ci#240
+      - uses: askalf/ci/actions/checkout-with-retry@b7aa6c761d009fff5c2ef6e416c3c95c6d9011b9 # main 2026-11-25, askalf/ci#242
 
       - name: Install actionlint v1.7.1
         # Official release tarball, pinned to a specific version. Skipping
