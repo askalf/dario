@@ -13,6 +13,13 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.24.2] - 2026-11-25
+
+- **Claude Code 2.1.332 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.331.
+- **The bundled `ToolSearch` tool definition changed.** Its input schema moved with the capture from Claude Code 2.1.332.
+- **The bundled template is labelled Claude Code 2.1.332.** It was labelled 2.1.331. Its `user-agent` value is `claude-cli/2.1.332 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+
 ## [6.24.1] - 2026-11-23
 
 - **Claude Code 2.1.331 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.330.
