@@ -66,6 +66,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      actions: read
     steps:
       - name: Check out with an identity whose pushes trigger CI
         uses: askalf/ci/actions/checkout-with-retry@12840236ea760c3fcc1b846abc1f852ab9e235b2 # main 2026-11-25, askalf/ci#244
@@ -140,6 +141,26 @@ jobs:
 
             git fetch origin "$head" "$base" --quiet
             git checkout -q -B "$head" "origin/$head"
+
+            # A heal moves the head. While a Redline review, fix or verdict post is queued or running
+            # at it, that run would finish on a head the PR no longer has and its work would count for
+            # nothing, so the PR is left for the next pass. Runs that cannot be listed count as busy.
+            head_sha=$(git rev-parse "origin/$head")
+            busy=""
+            for st in queued in_progress; do
+              if ! paths=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&status=$st&per_page=100" --jq '.workflow_runs[].path'); then
+                busy="the runs at $head_sha could not be listed"
+                break
+              fi
+              if grep -qxE '\.github/workflows/redline(-fix|-post)?\.yml' <<< "$paths"; then
+                busy="a Redline review, fix or verdict post is $st at $head_sha"
+                break
+              fi
+            done
+            if [ -n "$busy" ]; then
+              echo "  SKIPPED: $busy; the next pass heals it"
+              continue
+            fi
 
             # ── Renumber BEFORE merging. Order is load-bearing. ──────────────
             #
@@ -269,11 +290,20 @@ jobs:
               floor="$head_ver"
               continue
             fi
-            # Flatten the healed tree onto the base as one commit with the first non-merge commit's
-            # subject. The lease rejects the push if the remote tip is not the one fetched above.
-            subject=$(git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1)
-            git reset -q --soft "origin/$base"
-            git commit -q -m "$subject"
+            # A branch that is still the drafter's one commit is flattened onto the base as one commit
+            # with that commit's subject. Any other branch keeps its commits and gets the merge as it
+            # stands: the commits pushed on top of a draft (a fix for a review) are what its comments
+            # and verdicts name, and a template rebake's bake commit carries the rebake/upstream status
+            # the merge gate looks for among the PR's commits, which a new commit would not carry.
+            # The lease rejects the push if the remote tip is not the one fetched above.
+            own=$(git rev-list --no-merges --count "origin/$base..origin/$head")
+            if [ "$own" -eq 1 ] && [[ "$head" != bot/template-rebake-* ]]; then
+              subject=$(git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1)
+              git reset -q --soft "origin/$base"
+              git commit -q -m "$subject"
+            else
+              echo "  history kept: $own commits of its own, or a template rebake"
+            fi
             git push --force-with-lease="$head:$(git rev-parse "origin/$head")" origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
             # Claim it for the rest of this run.
