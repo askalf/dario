@@ -23,18 +23,23 @@ const reset = wf.indexOf('git reset -q --soft "origin/$base"');
 check('the workflow flattens the branch before it pushes', reset !== -1 && push > reset);
 check('the push is a lease on the branch tip it fetched, not a bare force', !/git push (-f|--force)(?!-)/.test(wf) && wf.includes('--force-with-lease="$head:$(git rev-parse "origin/$head")"'));
 check('the one commit keeps the draft commit\'s subject', wf.includes('git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1'));
-check('it flattens only a branch that is still one commit of its own, and never a template rebake',
-  wf.includes('own=$(git rev-list --no-merges --count "origin/$base..origin/$head")')
-  && wf.includes('if [ "$own" -eq 1 ] && [[ "$head" != bot/template-rebake-* ]]; then')
-  && wf.indexOf('if [ "$own" -eq 1 ]') !== -1 && wf.indexOf('if [ "$own" -eq 1 ]') < reset);
+// The workflow's history block: from its comment up to the push, run as it stands in the replays below.
+const blockStart = wf.indexOf("# A branch that is still the drafter's one commit");
+const block = blockStart === -1 ? '' : wf.slice(blockStart, push);
+check('the history block decides before it flattens, and ends at the push',
+  blockStart !== -1 && blockStart < reset && reset < push);
 
-const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, encoding: 'utf8' }).trim();
+const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
 
 // A branch drafted on master, then master moves, then the workflow's merge and fold: `commits` are
-// the branch's own commits before the heal, the first of them the draft.
-function stuckBranch(branch, commits) {
+// the branch's own commits before the heal, the first of them the draft. With `mergedBefore`, master
+// moves once and is merged into the branch before the heal, so the remote head is that merge.
+function stuckBranch(branch, commits, { mergedBefore = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dario-heal-'));
   git(dir, 'init', '-q', '-b', 'master');
+  git(dir, 'config', 'user.name', 't');
+  git(dir, 'config', 'user.email', 't@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
   writeFileSync(join(dir, 'a.txt'), 'base\n');
   git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base');
   git(dir, 'checkout', '-q', '-b', branch);
@@ -42,6 +47,13 @@ function stuckBranch(branch, commits) {
     writeFileSync(join(dir, `b${i}.txt`), `${subject}\n`);
     git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', subject);
   });
+  if (mergedBefore) {
+    git(dir, 'checkout', '-q', 'master');
+    writeFileSync(join(dir, 'm.txt'), 'master moved first\n');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'master change before the merge');
+    git(dir, 'checkout', '-q', branch);
+    git(dir, 'merge', '-q', '--no-ff', '--no-edit', 'master');
+  }
   const tip = git(dir, 'rev-parse', 'HEAD');
   git(dir, 'checkout', '-q', 'master');
   writeFileSync(join(dir, 'c.txt'), 'master moved\n');
@@ -53,15 +65,14 @@ function stuckBranch(branch, commits) {
   return { dir, tip, tree: git(dir, 'rev-parse', 'HEAD^{tree}') };
 }
 
-// The workflow's decision and lines, with the remote-tracking names replaced by local ones:
-// origin/$head is the branch tip before the heal, origin/$base is master.
+// Run the workflow's block with the shell the Actions runner uses. The fetched tips are local
+// remote-tracking refs: origin/$head is the branch tip before the heal, origin/$base is master.
 function heal(dir, branch, tip) {
-  const own = Number(git(dir, 'rev-list', '--no-merges', '--count', `master..${tip}`));
-  if (own === 1 && !branch.startsWith('bot/template-rebake-')) {
-    const subject = git(dir, 'log', '--reverse', '--no-merges', '--format=%s', `master..${tip}`).split('\n')[0];
-    git(dir, 'reset', '-q', '--soft', 'master');
-    git(dir, 'commit', '-q', '-m', subject);
-  }
+  git(dir, 'update-ref', 'refs/remotes/origin/master', 'master');
+  git(dir, 'update-ref', `refs/remotes/origin/${branch}`, tip);
+  execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', block], {
+    cwd: dir, encoding: 'utf8', env: { ...process.env, base: 'master', head: branch },
+  });
 }
 
 {
@@ -85,6 +96,12 @@ function heal(dir, branch, tip) {
   const { dir, tip, tree } = stuckBranch('bot/template-rebake-20261125-020228', ['auto-rebake: template drift detected']);
   heal(dir, 'bot/template-rebake-20261125-020228', tip);
   check('a template rebake keeps its bake commit, though it is the only one', git(dir, 'merge-base', '--is-ancestor', tip, 'HEAD') === '' && git(dir, 'rev-parse', 'HEAD^{tree}') === tree);
+}
+{
+  // A one-commit draft someone updated by merging master: the merge tip is what a review can name.
+  const { dir, tip, tree } = stuckBranch('bot/template-label-y', ['chore(template): label refresh'], { mergedBefore: true });
+  heal(dir, 'bot/template-label-y', tip);
+  check('a draft with a merge already on its head keeps that merge tip', git(dir, 'merge-base', '--is-ancestor', tip, 'HEAD') === '' && git(dir, 'rev-parse', 'HEAD^{tree}') === tree);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
