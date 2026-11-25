@@ -9,10 +9,12 @@
 //   floor    The floor to pass renumber-release-version.mjs so that the version it leaves is held
 //            by no other open drift PR. Every open drift PR holds the version on its branch whatever
 //            its state (up to date, a draft, waiting on Redline), so a renumber avoids all of them,
-//            not only the PRs healed earlier in the same run. It takes the lowest free version above
-//            the floor, not one above the highest held.
-//   changed  Has the set of open drift PRs, or a head among them, changed since the plan? The
-//            versions the floor steps over were read from that set, so a push waits for a new plan.
+//            not only the PRs healed earlier in the same run. The version is the next free one above
+//            the floor, or, when the PR's own version is above the floor but held by another, the next
+//            free one above that version; never one above the highest version held.
+//   changed  Has the set of open drift PRs, or a head among them, changed since the plan, or has the
+//            PR about to be pushed become a draft or moved to another base? The versions the floor
+//            avoids were read from that set, so a push waits for a new plan.
 //
 // What this cannot see: a review that starts, or a sibling branch that moves, in the moments
 // between the workflow's last check and its push. Redline then drops that review and reads the
@@ -30,9 +32,10 @@
 //   node drift-heal-plan.mjs floor <floor> <own-version> <held.json>
 //        Prints the floor to pass renumber-release-version.mjs. held.json is the list of the
 //        versions the other open drift PRs hold.
-//   node drift-heal-plan.mjs changed <expected.json> <drift.json>
+//   node drift-heal-plan.mjs changed <expected.json> <drift.json> [<pr> <base>]
 //        Prints what changed, or nothing. expected.json maps each planned PR number to the heads
-//        it may show now; drift.json is the open drift PRs as listed now.
+//        it may show now; drift.json is the open drift PRs as listed now; <pr> and <base> name the
+//        PR about to be pushed and the base it was healed onto.
 //
 // Exit 0 with the answer on stdout; exit 2 on bad arguments or unreadable input, which the
 // workflow's `set -e` turns into a failed run rather than a guess.
@@ -86,11 +89,13 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *     moving the head: a comment `## Fix not applied at <head>`, `## Fix refused at <head>` or
  *     `## Description updated at <head>` posted after the run's latest attempt finished, so the
  *     answer to an earlier run at the same head does not release a retry there, and each finished
- *     run needs an answer of its own: one comment does not answer two runs. (The platform posts
+ *     run needs an answer of its own: one comment does not answer two runs. Runs take answers in
+ *     the order they finished, every run at the head included, so a run whose wait is over still
+ *     takes the answer posted for it, and that answer is not handed to a later run. (The platform posts
  *     one comment per heading, so a retry refused the same way gets no new one, and holds the head
  *     until the wait ends.) A fix that was applied moved the head, so its run names an
- *     older one. A cancelled or skipped run has nothing to apply, and past FIX_RESULT_WAIT_MS from
- *     the latest attempt's finish the head is free again.
+ *     older one. A cancelled or skipped run has nothing to apply. A run left without an answer holds
+ *     the head until FIX_RESULT_WAIT_MS after its latest attempt finished.
  *   - A review on pull_request carries the PR's own title as its name, which any author writes,
  *     so its title says nothing. One not finished holds the PR when its head commit is this head.
  * A run for an older head of the PR does not hold it: Redline drops that review either way.
@@ -112,9 +117,7 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
       if (r.workflow !== 'redline-fix.yml' || r.event !== 'workflow_dispatch' || !namesThisHead(r, 'fix')) continue;
       if (r.conclusion === 'cancelled' || r.conclusion === 'skipped') continue;
       if (String(r.head_sha ?? '').toLowerCase() !== head) continue;
-      const at = Date.parse(String(r.updated_at ?? ''));
-      if (Number.isFinite(at) && now - at >= FIX_RESULT_WAIT_MS) continue;
-      finished.push({ what, at });
+      finished.push({ what, at: Date.parse(String(r.updated_at ?? '')) });
       continue;
     }
     if (r.workflow === 'redline-post.yml') return `${what} is posting a verdict`;
@@ -127,12 +130,14 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
       return `${what} is reviewing this head`;
     }
   }
-  if (finished.length === 0) return '';
-  if (!Array.isArray(comments)) return `${finished[0].what} finished, and the PR's comments could not be read to see whether its fix was answered`;
+  const holding = (f) => !Number.isFinite(f.at) || now - f.at < FIX_RESULT_WAIT_MS;
+  if (!finished.some(holding)) return '';
+  if (!Array.isArray(comments)) return `${finished.find(holding).what} finished, and the PR's comments could not be read to see whether its fix was answered`;
   const unreadable = finished.find((f) => !Number.isFinite(f.at));
   if (unreadable) return `${unreadable.what} finished, and when it finished cannot be read`;
-  // Each finished run, earliest first, takes the earliest answer posted after it finished that no
-  // earlier run took. A run left without one is not answered yet.
+  // Every finished run at the head, earliest first, takes the earliest answer posted after it
+  // finished that no earlier run took, whether or not its own wait is over. A run left without one
+  // holds the head while its wait lasts.
   const answers = comments
     .filter((c) => FIX_RESULT_AT_HEAD.exec(String(c?.line ?? ''))?.[1] === head)
     .map((c) => Date.parse(String(c?.at ?? '')))
@@ -141,8 +146,8 @@ export function busyReason(repo, pr, headSha, runs, comments = [], now = Date.no
   let next = 0;
   for (const f of [...finished].sort((x, y) => x.at - y.at)) {
     while (next < answers.length && answers[next] < f.at) next++;
-    if (next >= answers.length) return `${f.what} finished, and its fix is not yet applied or refused at this head`;
-    next++;
+    if (next < answers.length) { next++; continue; }
+    if (holding(f)) return `${f.what} finished, and its fix is not yet applied or refused at this head`;
   }
   return '';
 }
@@ -169,16 +174,24 @@ export function pickFloor(floor, own, held) {
  * `expected` maps each planned PR number to the heads it may show now (its planned head, and for a
  * PR this run pushed, the pushed head too: the list can lag a push); `drift` is the list, each
  * { number, headRefOid }. A PR opened or closed since, or a head that is none of its expected ones,
- * is a change.
+ * is a change. So is `candidate` ({ number, base }, the PR about to be pushed) now listed as a draft,
+ * or with another base: neither moves its branch.
  */
-export function planChange(expected, drift) {
+export function planChange(expected, drift, candidate = null) {
   const now = new Map();
-  for (const p of drift) now.set(String(p.number), String(p.headRefOid ?? ''));
+  for (const p of drift) now.set(String(p.number), p);
   for (const [n, heads] of Object.entries(expected)) {
     if (!now.has(n)) return `#${n} is no longer open`;
-    if (!heads.includes(now.get(n))) return `#${n} moved to ${now.get(n).slice(0, 7)}`;
+    const oid = String(now.get(n).headRefOid ?? '');
+    if (!heads.includes(oid)) return `#${n} moved to ${oid.slice(0, 7)}`;
   }
   for (const n of now.keys()) if (!(n in expected)) return `#${n} was opened`;
+  if (candidate) {
+    const p = now.get(String(candidate.number));
+    if (!p) return `#${candidate.number} is no longer open`;
+    if (p.isDraft !== false) return `#${candidate.number} is now a draft`;
+    if (String(p.baseRefName ?? '') !== String(candidate.base)) return `#${candidate.number} now targets ${p.baseRefName}`;
+  }
   return '';
 }
 
@@ -203,16 +216,18 @@ export function main(argv, out = (s) => process.stdout.write(s), now = Date.now(
       out(`${pickFloor(floor, own, held)}\n`);
       return 0;
     }
-    if (cmd === 'changed' && args.length === 2) {
+    if (cmd === 'changed' && (args.length === 2 || args.length === 4)) {
       const expected = readJson(args[0]);
       const drift = readJson(args[1]);
+      if (args.length === 4 && !/^[1-9]\d*$/.test(args[2])) throw new Error(`not a PR number: ${args[2]}`);
+      const candidate = args.length === 4 ? { number: Number(args[2]), base: args[3] } : null;
       if (!expected || typeof expected !== 'object' || Array.isArray(expected) || !Array.isArray(drift)) throw new Error('expected.json is not a map or drift.json is not a list');
       for (const heads of Object.values(expected)) if (!Array.isArray(heads)) throw new Error('expected.json maps a PR to something other than a list of heads');
-      const change = planChange(expected, drift);
+      const change = planChange(expected, drift, candidate);
       if (change) out(`${change}\n`);
       return 0;
     }
-    process.stderr.write('usage: drift-heal-plan.mjs busy <owner/repo> <pr> <head-sha> <runs.json> <comments.json> | floor <floor> <own-version> <held.json> | changed <expected.json> <drift.json>\n');
+    process.stderr.write('usage: drift-heal-plan.mjs busy <owner/repo> <pr> <head-sha> <runs.json> <comments.json> | floor <floor> <own-version> <held.json> | changed <expected.json> <drift.json> [<pr> <base>]\n');
     return 2;
   } catch (err) {
     process.stderr.write(`drift-heal-plan: ${err instanceof Error ? err.message : String(err)}\n`);

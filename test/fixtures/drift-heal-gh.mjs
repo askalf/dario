@@ -6,7 +6,8 @@
 //        -> { total_count, workflow_runs }: the fixture.runs of <wf> with that status, 100 a page.
 //           A run is shown once <wf> and <s> have been listed `appearAfter` times (first pages,
 //           default 1). A run with `changeAfter: { key, calls, status }` has that status once
-//           `key` (`<wf>|<status>`) has been read `calls` times, any page. A workflow named in
+//           `key` (`<wf>|<status>`) has been read `calls` times, any page; one with
+//           `goneAfter: { key, calls }` is gone from every list from then on. A workflow named in
 //           fixture.failRuns fails.
 //   gh api repos/<o>/<r>/actions/workflows/<wf>/runs?event=workflow_dispatch&head_sha=<h>&per_page=100&page=<p>
 //        -> the fixture.runs of <wf> dispatched at that head, any status (`<wf>|head`).
@@ -50,10 +51,12 @@ function main() {
     }
     if ((fixture.failRuns ?? []).includes(wf)) return refuse('gh: HTTP 502');
     const statusOf = (r) => (r.changeAfter && (counts[`all|${r.changeAfter.key}`] ?? 0) >= r.changeAfter.calls ? r.changeAfter.status : r.status);
+    const gone = (r) => r.goneAfter && (counts[`all|${r.goneAfter.key}`] ?? 0) >= r.goneAfter.calls;
     const shown = (fixture.runs ?? [])
+      .filter((r) => !gone(r))
       .filter((r) => r.workflow === wf && (status ? statusOf(r) === status : r.event === 'workflow_dispatch' && r.head_sha === headSha))
       .filter((r) => (r.appearAfter ?? 1) <= (status ? n : Infinity))
-      .map(({ workflow, appearAfter, changeAfter, ...r }) => ({ ...r, status: statusOf({ ...r, changeAfter }) }));
+      .map(({ workflow, appearAfter, changeAfter, goneAfter, ...r }) => ({ ...r, status: statusOf({ ...r, changeAfter }) }));
     return answer({ total_count: shown.length, workflow_runs: pageOf(shown, page) });
   }
   const comments = args[0] === 'api' ? /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(args[1] ?? '') : null;

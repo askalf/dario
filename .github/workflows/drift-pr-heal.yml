@@ -159,65 +159,63 @@ jobs:
           cp scripts/drift-heal-plan.mjs scripts/_drift-patch-helpers.mjs "$plan_dir/"
           plan_js="$plan_dir/drift-heal-plan.mjs"
 
-          # Every run of the three Redline workflows that has not finished, by each
-          # such status and every page of it, as one JSON list, or `null` when a list
-          # could not be read in full, which drift-heal-plan.mjs counts as busy. Read
-          # with the job's own token. The lists are read a page and a status at a time,
-          # and a run can change status, or another can join a list, between two reads.
-          # So each status's pages must add up to the total its first page gave, and
-          # each first page is read again at the end: a total that moved means a run
-          # may have been missed, and the read counts as incomplete. Left: two runs
-          # trading places within one status between those reads, which leaves its
-          # total unchanged.
-          redline_runs() {
-            local out='[]' wf st page raw rows n got
-            local -A totals=()
-            for wf in redline.yml redline-fix.yml redline-post.yml; do
-              for st in requested pending waiting queued in_progress; do
-                page=1
-                got=0
-                while :; do
-                  raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100&page=$page") || { echo null; return 0; }
-                  if [ "$page" -eq 1 ]; then totals["$wf|$st"]=$(jq '.total_count' <<< "$raw") || { echo null; return 0; }; fi
-                  rows=$(jq -c --arg wf "$wf" '[.workflow_runs[]
-                         | {workflow: $wf, id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
-                  out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
-                  n=$(jq 'length' <<< "$rows")
-                  got=$((got + n))
-                  if [ "$n" -lt 100 ]; then break; fi
-                  page=$((page + 1))
-                  if [ "$page" -gt 10 ]; then echo null; return 0; fi
-                done
-                if [ "$got" != "${totals[$wf|$st]}" ]; then echo null; return 0; fi
-              done
-            done
-            for wf in redline.yml redline-fix.yml redline-post.yml; do
-              for st in requested pending waiting queued in_progress; do
-                raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100&page=1") || { echo null; return 0; }
-                if [ "$(jq '.total_count' <<< "$raw")" != "${totals[$wf|$st]}" ]; then echo null; return 0; fi
-              done
-            done
-            echo "$out"
-          }
-          # Every fix run dispatched at head $1, any status, every page, as a JSON list,
-          # or `null`. The platform's fix dispatcher answers a finished fix run after it,
-          # and until it does the head the run read must not move. This is the list the
-          # dispatcher itself reads (event workflow_dispatch, head_sha the PR head), so a
-          # run it would apply is here, however long ago it was created; one dispatched
-          # from another ref is one it never applies.
-          fix_runs_at() {
-            local out='[]' page=1 raw rows n
+          # One list of a Redline workflow's runs ($1 the workflow, $2 the query), every
+          # page, as a JSON list, or `null` when it could not be read in full: a page
+          # that failed, more than ten pages, pages that do not add up to the total the
+          # first page gave, or a run id twice.
+          list_runs() {
+            local wf="$1" q="$2" out='[]' page=1 raw rows n got=0 total=""
             while :; do
-              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?event=workflow_dispatch&head_sha=$1&per_page=100&page=$page") || { echo null; return 0; }
-              rows=$(jq -c '[.workflow_runs[]
-                     | {workflow: "redline-fix.yml", id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
+              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?$q&per_page=100&page=$page") || { echo null; return 0; }
+              if [ "$page" -eq 1 ]; then total=$(jq '.total_count' <<< "$raw") || { echo null; return 0; }; fi
+              rows=$(jq -c --arg wf "$wf" '[.workflow_runs[]
+                     | {workflow: $wf, id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
               out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
               n=$(jq 'length' <<< "$rows")
+              got=$((got + n))
               if [ "$n" -lt 100 ]; then break; fi
               page=$((page + 1))
               if [ "$page" -gt 10 ]; then echo null; return 0; fi
             done
+            if [ "$got" != "$total" ] || [ "$(jq '[.[].id] | unique | length' <<< "$out")" != "$got" ]; then echo null; return 0; fi
             echo "$out"
+          }
+          # The same list read twice, every page both times: it counts only when both
+          # reads hold the same runs with the same status (and, for a finished run, the
+          # same finish), since a run can change, leave or join a list between two page
+          # reads. Left unseen: a change after the second read.
+          stable_runs() {
+            local first second
+            first=$(list_runs "$1" "$2")
+            second=$(list_runs "$1" "$2")
+            if [ "$first" = null ] || [ "$second" = null ]; then echo null; return 0; fi
+            local shape='[.[] | [.id, .status, (if .status == "completed" then .updated_at else null end)]] | sort'
+            if [ "$(jq -c "$shape" <<< "$first")" != "$(jq -c "$shape" <<< "$second")" ]; then echo null; return 0; fi
+            echo "$first"
+          }
+          # Every run of the three Redline workflows that has not finished, by each such
+          # status, as one JSON list, or `null` when a list could not be read in full or
+          # changed between its two reads, which drift-heal-plan.mjs counts as busy.
+          # Read with the job's own token.
+          redline_runs() {
+            local out='[]' wf st rows
+            for wf in redline.yml redline-fix.yml redline-post.yml; do
+              for st in requested pending waiting queued in_progress; do
+                rows=$(stable_runs "$wf" "status=$st")
+                if [ "$rows" = null ]; then echo null; return 0; fi
+                out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
+              done
+            done
+            echo "$out"
+          }
+          # Every fix run dispatched at head $1, any status, as a JSON list, or `null`,
+          # read as the lists above are. The platform's fix dispatcher answers a finished
+          # fix run after it, and until it does the head the run read must not move. This
+          # is the list the dispatcher itself reads (event workflow_dispatch, head_sha the
+          # PR head), so a run it would apply is here, however long ago it was created;
+          # one dispatched from another ref is one it never applies.
+          fix_runs_at() {
+            stable_runs redline-fix.yml "event=workflow_dispatch&head_sha=$1"
           }
           # askalf's comments on PR #$1 as { line, at } (first line, when posted), every
           # page, as a JSON list, or `null` when they could not be read in full.
@@ -254,11 +252,12 @@ jobs:
           }
           # The open drift PRs now, against the plan: what changed, or nothing. A PR
           # this run pushed may still show the head it had, since the list can lag a
-          # push.
+          # push. PR #$1, about to be pushed, must still be no draft and still target
+          # $2, the base it was healed onto: neither change moves its branch.
           plan_changed() {
             local k
             gh pr list --repo "$REPO" --state open --limit 1000 \
-              --json number,headRefName,headRefOid,headRepositoryOwner > "$plan_dir/open-now.json"
+              --json number,isDraft,headRefName,headRefOid,baseRefName,headRepositoryOwner > "$plan_dir/open-now.json"
             if [ "$(jq 'length' "$plan_dir/open-now.json")" -ge 1000 ]; then
               echo "the open PR list may be cut short (1000 or more)"
               return 0
@@ -271,7 +270,7 @@ jobs:
             for k in "${!planned[@]}"; do
               jq -n --arg k "$k" --arg a "${planned[$k]}" --arg b "${pushed_from[$k]:-}" '{($k): ([$a, $b] | map(select(. != "")))}'
             done | jq -s 'add // {}' > "$plan_dir/expected.json"
-            node "$plan_js" changed "$plan_dir/expected.json" "$plan_dir/drift-now.json"
+            node "$plan_js" changed "$plan_dir/expected.json" "$plan_dir/drift-now.json" "$1" "$2"
           }
           # The planned drift branches as origin has them now, against the plan: the
           # first that moved, or nothing. Origin has this run's own pushes at once, so
@@ -514,7 +513,7 @@ jobs:
             # found them. If that set or a head in it changed since (a draft renumbered,
             # a drift PR opened), no push is made from the old plan; the next run plans
             # again.
-            change=$(plan_changed)
+            change=$(plan_changed "$pr" "$base")
             if [ -n "$change" ]; then
               echo "  STOPPED: the open drift PRs changed during the run ($change); nothing more is healed, the next run plans again"
               git reset -q --hard "origin/$head"

@@ -59,6 +59,15 @@ check('two runs at one head finished before one answer: the answer is the first 
   /not yet applied or refused/.test(busy([done({ id: 1, updated_at: '2026-11-25T21:30:00Z' }), done({ id: 2, updated_at: '2026-11-25T21:35:00Z' })], [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-25T21:45:00Z')])));
 check('two runs, each answered after it finished: free',
   busy([done({ id: 1, updated_at: '2026-11-25T21:30:00Z' }), done({ id: 2, updated_at: '2026-11-25T21:35:00Z' })], [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-25T21:32:00Z'), said(`## Fix refused at ${HEAD}: x`, '2026-11-25T21:45:00Z')]) === '');
+{
+  // Two fixes finish at 12:00 and 12:04; the dispatcher answers only the first, at 12:05.
+  const twelve = Date.parse('2026-11-25T12:00:00Z');
+  const runsNow = [done({ id: 1, updated_at: '2026-11-25T12:00:00Z' }), done({ id: 2, updated_at: '2026-11-25T12:04:00Z' })];
+  const answer = [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-25T12:05:00Z')];
+  const at = (min) => busyReason(REPO, 1936, HEAD, runsNow, answer, twelve + min * 60_000);
+  check('the first run\'s answer stays the first run\'s when its wait is over: the second still holds the head until its own wait ends',
+    /not yet applied or refused/.test(at(359)) && /not yet applied or refused/.test(at(361)) && /run 2 /.test(at(361)) && at(365) === '', `${at(359)} | ${at(361)} | ${at(365)}`);
+}
 check('a finished fix run dispatched from another ref (its head commit is not this head): free, the dispatcher never applies it here',
   busy([done({ head_sha: OTHER })]) === '');
 check('a re-run whose latest attempt finished lately holds the head, however old the run', /not yet applied or refused/.test(busy([done({ updated_at: '2026-11-25T21:55:00Z' })], [said(`## Fix not applied at ${HEAD}: refused`, '2026-11-23T10:00:00Z')])));
@@ -87,6 +96,12 @@ check('a PR this run pushed may show either its old or its new head', planChange
 check('a head that moved otherwise: a change', /#11 moved/.test(planChange(plan, [{ number: 11, headRefOid: OTHER }, { number: 12, headRefOid: 'd'.repeat(40) }])));
 check('a drift PR opened since: a change', /#13 was opened/.test(planChange(plan, [{ number: 11, headRefOid: HEAD }, { number: 12, headRefOid: 'd'.repeat(40) }, { number: 13, headRefOid: OTHER }])));
 check('a drift PR closed since: a change', /#12 is no longer open/.test(planChange(plan, [{ number: 11, headRefOid: HEAD }])));
+{
+  const listed = (over) => [{ number: 11, headRefOid: HEAD, isDraft: false, baseRefName: 'master', ...over }, { number: 12, headRefOid: 'd'.repeat(40), isDraft: false, baseRefName: 'master' }];
+  check('the PR about to be pushed, unchanged: no change', planChange(plan, listed({}), { number: 11, base: 'master' }) === '');
+  check('the PR about to be pushed is now a draft, its head unchanged: a change', /#11 is now a draft/.test(planChange(plan, listed({ isDraft: true }), { number: 11, base: 'master' })));
+  check('the PR about to be pushed now targets another base, its head unchanged: a change', /#11 now targets release/.test(planChange(plan, listed({ baseRefName: 'release' }), { number: 11, base: 'master' })));
+}
 
 console.log('\n=== the command line ===');
 {

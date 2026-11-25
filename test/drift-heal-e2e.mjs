@@ -225,7 +225,27 @@ console.log('\n=== a list that changes while it is read counts as unread ===');
   releaseMaster(fx2, '1.0.5');
   // A review of C that joins the queued list after it was read (a re-run), before the end of the scan.
   const r2 = heal(fx2, { prs: [pr(13, 'bot/cc-drift-c', c2, 'DIRTY')], runs: [{ workflow: 'redline.yml', id: 2, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c2, appearAfter: 2 }] });
-  check('a review that joins a list already read is caught when the first pages are read again', r2.status === 0 && tipOf(fx2, 'bot/cc-drift-c') === c2 && /could not be listed/.test(section(r2.out, 13)), r2.out);
+  check('a review that joins a list already read is caught when the list is read again', r2.status === 0 && tipOf(fx2, 'bot/cc-drift-c') === c2 && /could not be listed/.test(section(r2.out, 13)), r2.out);
+  const fx3 = fixture();
+  const c3 = draft(fx3, 'bot/cc-drift-c', fx3.old, '1.0.5', 'change c');
+  releaseMaster(fx3, '1.0.5');
+  // Between the two reads, an unrelated queued review leaves the list and one of C joins it: the
+  // count stays at one, and the second read holds C's review.
+  const r3 = heal(fx3, { prs: [pr(13, 'bot/cc-drift-c', c3, 'DIRTY')], runs: [
+    { workflow: 'redline.yml', id: 4, event: 'pull_request', status: 'queued', display_title: 'other', head_sha: '7'.repeat(40), goneAfter: { key: 'redline.yml|queued', calls: 2 } },
+    { workflow: 'redline.yml', id: 5, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c3, appearAfter: 2 },
+  ] });
+  check('a review replaced by one of this head at a constant count is caught by the run ids', r3.status === 0 && tipOf(fx3, 'bot/cc-drift-c') === c3 && /could not be listed/.test(section(r3.out, 13)), r3.out);
+  const fx4 = fixture();
+  const c4 = draft(fx4, 'bot/cc-drift-c', fx4.old, '1.0.5', 'change c');
+  releaseMaster(fx4, '1.0.5');
+  // 101 fix runs at C's head, all answered long ago; the newest is deleted once the first page is
+  // read, so the last one would shift onto page one and page two come back empty.
+  const old = (i) => ({ workflow: 'redline-fix.yml', id: 5000 + i, event: 'workflow_dispatch', status: 'completed', conclusion: 'success',
+    display_title: `Redline fix askalf/fx#13 @ ${c4}`, head_sha: c4, created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:10:00Z',
+    ...(i === 0 ? { goneAfter: { key: 'redline-fix.yml|head', calls: 2 } } : {}) });
+  const r4 = heal(fx4, { prs: [pr(13, 'bot/cc-drift-c', c4, 'DIRTY')], runs: Array.from({ length: 101 }, (_, i) => old(i)) });
+  check('the per-head fix list that shifts across its page boundary is held as unread', r4.status === 0 && tipOf(fx4, 'bot/cc-drift-c') === c4 && /could not be listed/.test(section(r4.out, 13)), r4.out);
 }
 
 console.log('\n=== a review that starts while a PR is healed: left as it was, and its version still held ===');
@@ -237,7 +257,7 @@ console.log('\n=== a review that starts while a PR is healed: left as it was, an
   commitOnMaster(fx, 'docs: unrelated', () => writeFileSync(join(fx.work, 'notes.txt'), 'master moved\n'));
   const r = heal(fx, {
     prs: [pr(21, 'bot/cc-drift-e', e, 'BEHIND'), pr(22, 'bot/cc-drift-f', f, 'DIRTY')],
-    // Each check reads every first page twice. Shown from the third first-page read of redline.yml's
+    // Each check reads every list twice. Shown from the third first-page read of redline.yml's
     // in-progress runs on: after E's first check, from its check before the push.
     runs: [{ workflow: 'redline.yml', id: 7, event: 'pull_request', status: 'in_progress', display_title: 'chore(drift): change e', head_sha: e, appearAfter: 3 }],
   });
@@ -277,6 +297,8 @@ console.log('\n=== a dispatched re-read holds its PR; a finished fix holds it un
   check('K, with a re-read queued for its head, is left as it was', r.status === 0 && tipOf(fx, 'bot/cc-drift-k') === k && /SKIPPED: Redline is at work on this head/.test(section(r.out, 51)), r.out);
   check('M, whose fix run finished and is not yet answered, is left as it was', tipOf(fx, 'bot/cc-drift-m') === m && /not yet applied or refused at this head/.test(section(r.out, 53)), section(r.out, 53));
   check('L, whose finished fix the platform answered, is healed clear of the 1.0.5 the others hold: 1.0.6', versionOf(fx, 'bot/cc-drift-l') === '1.0.6', versionOf(fx, 'bot/cc-drift-l'));
+  check('the PRs\' comments are read, and with the job\'s token', r.calls.some((x2) => /\/issues\/\d+\/comments\?/.test(String(x2.args[1])))
+    && r.calls.filter((x2) => /\/issues\/\d+\/comments\?/.test(String(x2.args[1]))).every((x2) => x2.token === 'runs-token'));
   check('N, whose retry finished after the first run\'s refusal, is left as it was', tipOf(fx, 'bot/cc-drift-n') === n2 && /not yet applied or refused at this head/.test(section(r.out, 54)), section(r.out, 54));
   check('Q, a fix run created two days ago and re-run lately, is left as it was', tipOf(fx, 'bot/cc-drift-q') === q && /not yet applied or refused at this head/.test(section(r.out, 55)), section(r.out, 55));
 }
@@ -314,6 +336,14 @@ console.log('\n=== a sibling that changes during the run: no push from the old p
   const crowd = Array.from({ length: 999 }, (_, i) => pr(2000 + i, `feature/by-hand-${i}`, 'f'.repeat(40), 'CLEAN'));
   const r3 = heal(long, { prs: one, prsLater: [...one, ...crowd], runs: [] });
   check('a second list of 1000 or more open PRs, which may be cut short, stops it too', r3.status === 0 && tipOf(long, 'bot/cc-drift-a') === a3 && /may be cut short/.test(r3.out), r3.out);
+  for (const [what, over, said] of [['converted to a draft', { isDraft: true }, /#11 is now a draft/], ['retargeted to another base', { baseRefName: 'release' }, /#11 now targets release/]]) {
+    const fx = fixture();
+    const a4 = draft(fx, 'bot/cc-drift-a', fx.old, '1.0.5', 'change a');
+    releaseMaster(fx, '1.0.5');
+    const first = [pr(11, 'bot/cc-drift-a', a4, 'DIRTY')];
+    const r4 = heal(fx, { prs: first, prsLater: [{ ...first[0], ...over }], runs: [] });
+    check(`the PR ${what} during the run, its head unchanged, is not pushed`, r4.status === 0 && tipOf(fx, 'bot/cc-drift-a') === a4 && said.test(r4.out), r4.out);
+  }
 }
 
 console.log('\n=== a sibling branch that moves onto the chosen version while the PR list still shows its old head ===');
