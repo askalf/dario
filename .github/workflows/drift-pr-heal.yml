@@ -26,6 +26,13 @@ name: Drift PR heal (conflict + version collision)
 # able to touch a human's PR, and the branch-prefix filter is the only thing
 # standing between those two facts — keep it in step with auto-merge-sweep.yml.
 #
+# WAITS for Redline. A heal pushes a new head, and Redline drops a review
+# whose head moved and a fix run pushes onto the branch it read. So a PR with
+# a review, fix or verdict post queued or running at its head is skipped, and
+# the next run heals it. Every open drift PR holds the version on its branch,
+# skipped or not, so a renumber steps over all of them
+# (scripts/drift-heal-plan.mjs).
+#
 # REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
 # the two-file shape our automation produces and exits 1 on anything else;
 # renumber-release-version.mjs exits 1 when the CHANGELOG does not carry
@@ -66,6 +73,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      # Redline's runs are listed with the job's own token, so the heal can wait for them.
+      actions: read
     steps:
       - name: Check out with an identity whose pushes trigger CI
         uses: askalf/ci/actions/checkout-with-retry@12840236ea760c3fcc1b846abc1f852ab9e235b2 # main 2026-11-25, askalf/ci#244
@@ -97,6 +106,7 @@ jobs:
       - name: Heal
         env:
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
+          RUNS_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -104,18 +114,26 @@ jobs:
           git config user.name  "askalf"
           git config user.email "263217947+askalf@users.noreply.github.com"
 
-          # Same prefix filter as auto-merge-sweep.yml. DIRTY = conflicting,
-          # BEHIND = base moved under a strict up-to-date policy. Both are
-          # states no other job clears.
-          candidates=$(gh pr list --repo "$REPO" --state open --limit 50 \
-            --json number,isDraft,headRefName,baseRefName,headRepositoryOwner,mergeStateStatus \
-            --jq '[.[]
-                   | select(.isDraft == false)
-                   | select(.headRepositoryOwner.login == "'"${REPO%%/*}"'")
-                   | select(.mergeStateStatus == "DIRTY" or .mergeStateStatus == "BEHIND")
+          # Every open drift-bot PR, by the same prefix filter as auto-merge-sweep.yml.
+          # Each one holds the version on its branch whatever its state (up to date,
+          # a draft, waiting on Redline), so the renumber below steps over all of
+          # them. A list that may be cut short could hide one, so it is refused.
+          all=$(gh pr list --repo "$REPO" --state open --limit 1000 \
+            --json number,isDraft,headRefName,headRefOid,baseRefName,headRepositoryOwner,mergeStateStatus)
+          if [ "$(jq 'length' <<< "$all")" -ge 1000 ]; then
+            echo "1000 or more open PRs: the list may be cut short, so no version plan is complete. Nothing healed."
+            exit 1
+          fi
+          drift=$(jq -c --arg owner "${REPO%%/*}" '[.[]
+                   | select(.headRepositoryOwner.login == $owner)
                    | select(.headRefName | startswith("bot/cc-drift-")
                             or startswith("bot/template-label-")
-                            or startswith("bot/template-rebake-"))]')
+                            or startswith("bot/template-rebake-"))]' <<< "$all")
+          # DIRTY = conflicting, BEHIND = base moved under a strict up-to-date
+          # policy. Both are states no other job clears.
+          candidates=$(jq -c '[.[]
+                   | select(.isDraft == false)
+                   | select(.mergeStateStatus == "DIRTY" or .mergeStateStatus == "BEHIND")]' <<< "$drift")
 
           count=$(printf '%s' "$candidates" | jq 'length')
           echo "Stuck drift-bot PRs: $count"
@@ -128,8 +146,73 @@ jobs:
             exit 0
           fi
 
+          # The plan's helpers, copied out before the loop: each candidate branch is
+          # checked out in turn and may predate them.
+          plan_dir="$RUNNER_TEMP/drift-heal-plan"
+          mkdir -p "$plan_dir"
+          cp scripts/drift-heal-plan.mjs scripts/_drift-patch-helpers.mjs "$plan_dir/"
+          plan_js="$plan_dir/drift-heal-plan.mjs"
+
+          # Redline's queued and running reviews, fixes and verdict posts as one JSON
+          # list, or `null` when a list could not be read, which drift-heal-plan.mjs
+          # counts as busy. The newest 100 runs of each workflow: one still queued or
+          # running is among them. Read with the job's own token (actions: read).
+          redline_runs() {
+            local out='[]' wf page
+            for wf in redline.yml redline-fix.yml redline-post.yml; do
+              if ! page=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?per_page=100" \
+                          | jq -c --arg wf "$wf" '[.workflow_runs[] | select(.status != "completed")
+                                | {workflow: $wf, id, event, status, display_title, head_sha}]'); then
+                echo null
+                return 0
+              fi
+              out=$(jq -c --argjson page "$page" '. + $page' <<< "$out")
+            done
+            echo "$out"
+          }
+          # Why Redline is at work on PR $1 at head $2, or nothing.
+          redline_busy() {
+            redline_runs > "$plan_dir/runs.json"
+            node "$plan_js" busy "$REPO" "$1" "$2" "$plan_dir/runs.json"
+          }
+
+          # The version each open drift PR holds, read at the commit the list names.
+          # A branch that cannot be fetched or read leaves the plan incomplete, and no
+          # version is chosen from an incomplete plan: nothing is healed. A branch that
+          # moved since the list is left for the next run, which lists it again.
+          declare -A held=()
+          declare -A planned=()
+          for j in $(seq 0 $(( $(jq 'length' <<< "$drift") - 1 ))); do
+            n=$(jq -r ".[$j].number" <<< "$drift")
+            h=$(jq -r ".[$j].headRefName" <<< "$drift")
+            oid=$(jq -r ".[$j].headRefOid" <<< "$drift")
+            if ! git fetch -q origin "+refs/heads/$h:refs/remotes/origin/$h"; then
+              echo "Plan incomplete: could not fetch $h (#$n). Nothing healed."
+              exit 1
+            fi
+            if [ "$(git rev-parse "refs/remotes/origin/$h")" != "$oid" ]; then
+              echo "Plan incomplete: $h (#$n) moved since the list was read. Nothing healed; the next run lists it again."
+              exit 0
+            fi
+            v=$(git show "$oid:package.json" 2>/dev/null | jq -r '.version // ""' 2>/dev/null) || v=""
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Plan incomplete: $h (#$n) holds no x.y.z version at $oid. Nothing healed."
+              exit 1
+            fi
+            held[$n]="$v"
+            planned[$n]="$oid"
+          done
+          # The versions every open drift PR but #$1 holds, as a JSON list.
+          held_by_others() {
+            local k
+            for k in "${!held[@]}"; do
+              if [ "$k" != "$1" ]; then printf '%s\n' "${held[$k]}"; fi
+            done | jq -R . | jq -sc .
+          }
+
           healed=0
           refused=0
+          skipped=0
           # Highest version claimed so far this run — see the renumber block.
           floor=""
           for i in $(seq 0 $((count - 1))); do
@@ -140,6 +223,28 @@ jobs:
 
             git fetch origin "$head" "$base" --quiet
             git checkout -q -B "$head" "origin/$head"
+
+            # The plan read this branch at the commit the list named. If it has moved
+            # since, the version it holds may have too: record that one for the rest
+            # of the run and leave the branch to the next run. If it cannot be read,
+            # nothing more is healed, since no version can be chosen around it.
+            if [ "$(git rev-parse HEAD)" != "${planned[$pr]}" ]; then
+              v=$(jq -r '.version // ""' package.json 2>/dev/null) || v=""
+              if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "  STOPPED: moved since the list was read and holds no x.y.z version; nothing more is healed this run"
+                break
+              fi
+              held[$pr]="$v"
+              echo "  SKIPPED: moved since the list was read; the next run heals it"
+              skipped=$((skipped + 1))
+              continue
+            fi
+            busy=$(redline_busy "$pr" "${planned[$pr]}")
+            if [ -n "$busy" ]; then
+              echo "  SKIPPED: Redline is at work on this head ($busy); the next run heals it"
+              skipped=$((skipped + 1))
+              continue
+            fi
 
             # ── Renumber BEFORE merging. Order is load-bearing. ──────────────
             #
@@ -174,7 +279,14 @@ jobs:
             else
               effective_floor="$tip"
             fi
-            if ! node scripts/renumber-release-version.mjs "$effective_floor"; then
+            # The floor also steps over every version another open drift PR holds,
+            # so the renumber never lands on one (drift-heal-plan.mjs floor).
+            held_by_others "$pr" > "$plan_dir/held.json"
+            pick=$(node "$plan_js" floor "$effective_floor" "${held[$pr]}" "$plan_dir/held.json")
+            if [ "$pick" != "$effective_floor" ]; then
+              echo "  floor raised from $effective_floor to $pick: another open drift PR holds the version above it"
+            fi
+            if ! node scripts/renumber-release-version.mjs "$pick"; then
               echo "  REFUSED — could not renumber safely; leaving for a human"
               git reset -q --hard "origin/$head"
               refused=$((refused + 1))
@@ -188,7 +300,7 @@ jobs:
             # `npm run preflight` fails on.
             if ! git diff --quiet -- package.json package-lock.json CHANGELOG.md; then
               git add package.json package-lock.json CHANGELOG.md
-              git commit -q -m "chore: renumber release above ${effective_floor} (base moved under this PR)"
+              git commit -q -m "chore: renumber release above ${pick} (base moved under this PR)"
             fi
 
             # Conflicts are expected — that is the case being healed — so the
@@ -261,12 +373,34 @@ jobs:
               refused=$((refused + 1))
               continue
             fi
+            # And no other open drift PR holds it. The floor above is chosen so that
+            # none does; this keeps a resolver or fold that changed the version from
+            # handing the sweep two PRs with one release number.
+            taken=""
+            for k in "${!held[@]}"; do
+              if [ "$k" != "$pr" ] && [ "${held[$k]}" = "$head_ver" ]; then taken="$k"; fi
+            done
+            if [ -n "$taken" ]; then
+              echo "  REFUSED: #$taken already holds $head_ver"
+              git reset -q --hard "origin/$head"
+              refused=$((refused + 1))
+              continue
+            fi
 
             if git diff --quiet "origin/$head" HEAD; then
               echo "  nothing to push (already current)"
               # Still claim the version: an untouched PR already holding this
               # number must not have it handed to the next PR in the batch.
               floor="$head_ver"
+              continue
+            fi
+            # Redline may have started on this head while it was healed here: check
+            # again just before the push, and leave the branch as it was if so.
+            busy=$(redline_busy "$pr" "${planned[$pr]}")
+            if [ -n "$busy" ]; then
+              echo "  SKIPPED: Redline started on this head while it was healed ($busy); the next run heals it"
+              git reset -q --hard "origin/$head"
+              skipped=$((skipped + 1))
               continue
             fi
             # A branch that is still the drafter's one commit is flattened onto the base as one commit
@@ -290,7 +424,8 @@ jobs:
             echo "  HEALED — $(echo "$verdict" | tail -1)"
             # Claim it for the rest of this run.
             floor="$head_ver"
+            held[$pr]="$head_ver"
             healed=$((healed + 1))
           done
 
-          echo "healed=$healed refused=$refused"
+          echo "healed=$healed refused=$refused skipped=$skipped"
