@@ -269,11 +269,23 @@ jobs:
               floor="$head_ver"
               continue
             fi
-            # Flatten the healed tree onto the base as one commit with the first non-merge commit's
-            # subject. The lease rejects the push if the remote tip is not the one fetched above.
-            subject=$(git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1)
-            git reset -q --soft "origin/$base"
-            git commit -q -m "$subject"
+            # A branch that is still the drafter's one commit is flattened onto the base as one commit
+            # with that commit's subject. Any other branch keeps its commits and gets the merge as it
+            # stands: the commits pushed on top of a draft (a fix for a review, or a merge of the base
+            # someone resolved by hand) are what its comments and verdicts name, and a template
+            # rebake's bake commit carries the rebake/upstream status the merge gate looks for among
+            # the PR's commits, which a new commit would not carry. Every commit in the fetched range
+            # counts, merges included, so the sole commit must be a non-merge draft.
+            # The lease rejects the push if the remote tip is not the one fetched above.
+            own=$(git rev-list --count "origin/$base..origin/$head")
+            merges=$(git rev-list --merges --count "origin/$base..origin/$head")
+            if [ "$own" -eq 1 ] && [ "$merges" -eq 0 ] && [[ "$head" != bot/template-rebake-* ]]; then
+              subject=$(git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1)
+              git reset -q --soft "origin/$base"
+              git commit -q -m "$subject"
+            else
+              echo "  history kept: $own commits of its own ($merges merges), or a template rebake"
+            fi
             git push --force-with-lease="$head:$(git rev-parse "origin/$head")" origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
             # Claim it for the rest of this run.
