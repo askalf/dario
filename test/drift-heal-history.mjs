@@ -30,13 +30,24 @@ check('it flattens only a branch that is still one commit of its own, and never 
   && wf.indexOf('if [ "$own" -eq 1 ]') < reset);
 
 console.log('\n=== drift-pr-heal leaves a PR alone while Redline is at work on its head ===');
-const busyAt = wf.indexOf('for st in queued in_progress; do');
+const planAt = wf.indexOf('plan=$(node "$busy_js" plan "$REPO"');
+const loopAt = wf.indexOf('for i in $(seq 0 $((count - 1))); do');
 const renumberAt = wf.indexOf('node scripts/renumber-release-version.mjs');
-check('before it changes anything, it reads the queued and running runs at the head', busyAt !== -1 && renumberAt > busyAt
-  && wf.includes('gh api "repos/$REPO/actions/runs?head_sha=$head_sha&status=$st&per_page=100"'));
-check('a review, fix or verdict post there leaves the PR for the next pass', wf.includes("grep -qxE '\\.github/workflows/redline(-fix|-post)?\\.yml'")
-  && /if \[ -n "\$busy" \]; then\n\s+echo "  SKIPPED: \$busy; the next pass heals it"\n\s+continue/.test(wf));
-check('runs that cannot be listed count as busy', wf.includes('busy="the runs at $head_sha could not be listed"'));
+const recheckAt = wf.indexOf('busy=$(node "$busy_js" check "$REPO" "$pr" "$head_sha"');
+check('before the loop, it plans from the Redline runs with master\'s copy of the script', planAt !== -1 && planAt < loopAt
+  && wf.indexOf('cp scripts/drift-heal-busy.mjs "$busy_js"') < planAt);
+check('it lists the three Redline workflows\' queued and running runs, every page, with the job token',
+  wf.includes('for wf in redline.yml redline-fix.yml redline-post.yml; do') && wf.includes('for st in queued in_progress; do')
+  && wf.includes('GH_TOKEN="$RUNS_TOKEN" gh api --paginate "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100"')
+  && wf.includes('RUNS_TOKEN: ${{ github.token }}'));
+check('runs that cannot be listed are written as null, which makes every PR busy', /if ! out\+=\$\(GH_TOKEN="\$RUNS_TOKEN" gh api[\s\S]*?\n\s+echo null\n\s+return 0/.test(wf));
+check('a busy PR is skipped before anything changes, and the floor starts at the version it holds',
+  wf.includes(`busy=$(jq -r --arg n "$pr" '.busy[$n] // ""' <<< "$plan")`) && wf.indexOf(`'.busy[$n] // ""'`) < renumberAt
+  && wf.includes(`floor=$(jq -r '.floor' <<< "$plan")`));
+check('it checks again just before the push, and reserves the version of a PR it then skips', recheckAt > reset && recheckAt < push
+  && wf.includes(`raise_floor "$(git show "origin/$head:package.json" | jq -r '.version')"`));
+check('the floor only rises', wf.includes("raise_floor() { floor=$(printf '%s\\n%s\\n' \"$floor\" \"$1\" | sed '/^$/d' | sort -V | tail -1); }")
+  && !wf.includes('floor="$head_ver"'));
 check('the job may read the runs', /permissions:\n\s+contents: write\n\s+pull-requests: read\n\s+actions: read\n/.test(wf));
 
 const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, encoding: 'utf8' }).trim();

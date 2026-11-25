@@ -98,6 +98,8 @@ jobs:
       - name: Heal
         env:
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
+          # The job's own token lists the Redline runs (actions: read above); the PAT pushes.
+          RUNS_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -109,7 +111,7 @@ jobs:
           # BEHIND = base moved under a strict up-to-date policy. Both are
           # states no other job clears.
           candidates=$(gh pr list --repo "$REPO" --state open --limit 50 \
-            --json number,isDraft,headRefName,baseRefName,headRepositoryOwner,mergeStateStatus \
+            --json number,isDraft,headRefName,headRefOid,baseRefName,headRepositoryOwner,mergeStateStatus \
             --jq '[.[]
                    | select(.isDraft == false)
                    | select(.headRepositoryOwner.login == "'"${REPO%%/*}"'")
@@ -129,10 +131,44 @@ jobs:
             exit 0
           fi
 
+          # A heal moves the head, so a PR whose head Redline is reviewing, fixing or posting on is
+          # left for the next pass (scripts/drift-heal-busy.mjs, copied from master here because the
+          # loop below checks out each PR's branch). Best effort: a run can still start between the
+          # last check and the push. Runs that cannot be listed make every PR busy.
+          busy_js="$RUNNER_TEMP/drift-heal-busy.mjs"
+          cp scripts/drift-heal-busy.mjs "$busy_js"
+          redline_runs() {
+            local wf st out
+            out=""
+            for wf in redline.yml redline-fix.yml redline-post.yml; do
+              for st in queued in_progress; do
+                if ! out+=$(GH_TOKEN="$RUNS_TOKEN" gh api --paginate "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100" \
+                     --jq '.workflow_runs[] | {id, path, display_title, head_sha, event, status}'); then
+                  echo null
+                  return 0
+                fi
+                out+=$'\n'
+              done
+            done
+            printf '%s' "$out" | jq -s .
+          }
+          redline_runs > "$RUNNER_TEMP/heal-runs.json"
+          printf '%s' "$candidates" \
+            | jq -c '.[] | {number, head: .headRefName, head_sha: .headRefOid}' \
+            | while IFS= read -r c; do
+                v=$(git show "origin/$(jq -r .head <<< "$c"):package.json" 2>/dev/null | jq -r '.version // ""' || true)
+                jq -c --arg v "$v" '. + {version: $v}' <<< "$c"
+              done \
+            | jq -s . > "$RUNNER_TEMP/heal-candidates.json"
+          plan=$(node "$busy_js" plan "$REPO" "$RUNNER_TEMP/heal-candidates.json" "$RUNNER_TEMP/heal-runs.json")
+
           healed=0
           refused=0
-          # Highest version claimed so far this run — see the renumber block.
-          floor=""
+          # Highest version claimed so far this run — see the renumber block. It starts at the
+          # highest version a busy PR holds: that PR keeps its number, so no other PR may take it.
+          # It only ever rises (raise_floor), so a PR claiming a lower number does not free a higher one.
+          floor=$(jq -r '.floor' <<< "$plan")
+          raise_floor() { floor=$(printf '%s\n%s\n' "$floor" "$1" | sed '/^$/d' | sort -V | tail -1); }
           for i in $(seq 0 $((count - 1))); do
             pr=$(printf '%s' "$candidates"   | jq -r ".[$i].number")
             head=$(printf '%s' "$candidates" | jq -r ".[$i].headRefName")
@@ -142,23 +178,10 @@ jobs:
             git fetch origin "$head" "$base" --quiet
             git checkout -q -B "$head" "origin/$head"
 
-            # A heal moves the head. While a Redline review, fix or verdict post is queued or running
-            # at it, that run would finish on a head the PR no longer has and its work would count for
-            # nothing, so the PR is left for the next pass. Runs that cannot be listed count as busy.
             head_sha=$(git rev-parse "origin/$head")
-            busy=""
-            for st in queued in_progress; do
-              if ! paths=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&status=$st&per_page=100" --jq '.workflow_runs[].path'); then
-                busy="the runs at $head_sha could not be listed"
-                break
-              fi
-              if grep -qxE '\.github/workflows/redline(-fix|-post)?\.yml' <<< "$paths"; then
-                busy="a Redline review, fix or verdict post is $st at $head_sha"
-                break
-              fi
-            done
+            busy=$(jq -r --arg n "$pr" '.busy[$n] // ""' <<< "$plan")
             if [ -n "$busy" ]; then
-              echo "  SKIPPED: $busy; the next pass heals it"
+              echo "  SKIPPED: $busy; its version stays reserved and the next pass heals it"
               continue
             fi
 
@@ -287,7 +310,7 @@ jobs:
               echo "  nothing to push (already current)"
               # Still claim the version: an untouched PR already holding this
               # number must not have it handed to the next PR in the batch.
-              floor="$head_ver"
+              raise_floor "$head_ver"
               continue
             fi
             # A branch that is still the drafter's one commit is flattened onto the base as one commit
@@ -304,10 +327,21 @@ jobs:
             else
               echo "  history kept: $own commits of its own, or a template rebake"
             fi
+            # Again just before the push, since a review may have started while this PR was healed
+            # here. Best effort still: one can start between this read and the push.
+            redline_runs > "$RUNNER_TEMP/heal-runs.json"
+            busy=$(node "$busy_js" check "$REPO" "$pr" "$head_sha" "$RUNNER_TEMP/heal-runs.json")
+            if [ -n "$busy" ]; then
+              echo "  SKIPPED before the push: $busy; the next pass heals it"
+              # Not pushed, so the PR still holds the version on its branch: reserve that one.
+              raise_floor "$(git show "origin/$head:package.json" | jq -r '.version')"
+              git reset -q --hard "origin/$head"
+              continue
+            fi
             git push --force-with-lease="$head:$(git rev-parse "origin/$head")" origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
             # Claim it for the rest of this run.
-            floor="$head_ver"
+            raise_floor "$head_ver"
             healed=$((healed + 1))
           done
 
