@@ -53,9 +53,11 @@ jobs:
       # redline is a per-repository ephemeral runner under its own account, reset between
       # jobs; the review never runs as root on the host.
       runner-label: redline
-      # A second lens: every head the review approves is read once more in the same job, as this
-      # account, with a narrower rubric the runner host keeps for it. It never changes this job's
-      # result; redline-post.yml posts its verdict.
+      # A second lens: once the review approves a head, the same job runs a second review as this
+      # account, with the narrower rubric the runner supplies for it. A pull request that only moves
+      # Redline pins forward is approved there without a model read, and a re-run can reuse this
+      # account's standing verdict for the head. It never changes this job's result;
+      # redline-post.yml posts its verdict.
       second-reviewer-login: sprayberry-secondread
       pr: ${{ inputs.pr }}
       head: ${{ inputs.head }}
