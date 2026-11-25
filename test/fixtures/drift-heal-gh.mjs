@@ -11,8 +11,6 @@
 //           fixture.failRuns fails.
 //   gh api repos/<o>/<r>/actions/workflows/<wf>/runs?event=workflow_dispatch&head_sha=<h>&per_page=100&page=<p>
 //        -> the fixture.runs of <wf> dispatched at that head, any status (`<wf>|head`).
-//   gh api repos/<o>/<r>/issues/<n>/comments?per_page=100&page=<p>
-//        -> fixture.comments[n], 100 a page; fixture.failComments fails it.
 // fixture.sideEffects run git when a list is read: { key: '<wf>|<status>', call: k, git: [...] }
 // runs `git ...` on the k-th first-page read of that workflow and status (a branch moved mid-run).
 // Output is written synchronously and the process ends on its own, so a long answer is never cut.
@@ -58,11 +56,6 @@ function main() {
       .filter((r) => (r.appearAfter ?? 1) <= (status ? n : Infinity))
       .map(({ workflow, appearAfter, changeAfter, goneAfter, ...r }) => ({ ...r, status: statusOf({ ...r, changeAfter }) }));
     return answer({ total_count: shown.length, workflow_runs: pageOf(shown, page) });
-  }
-  const comments = args[0] === 'api' ? /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(args[1] ?? '') : null;
-  if (comments) {
-    if (fixture.failComments) return refuse('gh: HTTP 502');
-    return answer(pageOf(fixture.comments?.[comments[1]] ?? [], Number(comments[2])));
   }
   return refuse(`gh stand-in: unexpected call: ${args.join(' ')}`);
 }

@@ -29,13 +29,13 @@ name: Drift PR heal (conflict + version collision)
 # WAITS for Redline. A heal pushes a new head: Redline drops a review whose
 # head moved, and the platform's fix dispatcher drops a finished fix run's
 # commits when the branch moved after the run read it. So a PR with a review,
-# fix or verdict post not finished at its head, or a fix run finished there
-# and not yet answered, is skipped, and the next run heals it. Every open
-# drift PR holds the version on its branch, skipped or not, so a renumber
+# fix or verdict post not finished at its head, or a fix run that finished
+# there in the last six hours, is skipped, and a later run heals it. Every
+# open drift PR holds the version on its branch, skipped or not, so a renumber
 # avoids all of them, and a push waits for a new plan when the open drift PRs
 # or their branches changed during the run (scripts/drift-heal-plan.mjs). A
-# review that starts, or a branch that moves, in the moments between the last
-# check and the push is not seen.
+# review that starts after the query that would have listed it, or a branch
+# that moves after the last read of origin, is not seen.
 #
 # REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
 # the two-file shape our automation produces and exits 1 on anything else;
@@ -77,9 +77,7 @@ jobs:
     permissions:
       # The job's own token only reads: the checkout and the push use the drift-bot PAT.
       contents: read
-      pull-requests: read
-      # Redline's runs and the PRs' comments are read with the job's own token, so the heal can
-      # wait for them.
+      # Redline's runs are read with the job's own token, so the heal can wait for them.
       actions: read
     steps:
       - name: Check out with an identity whose pushes trigger CI
@@ -159,96 +157,13 @@ jobs:
           cp scripts/drift-heal-plan.mjs scripts/_drift-patch-helpers.mjs "$plan_dir/"
           plan_js="$plan_dir/drift-heal-plan.mjs"
 
-          # One list of a Redline workflow's runs ($1 the workflow, $2 the query), every
-          # page, as a JSON list, or `null` when it could not be read in full: a page
-          # that failed, more than ten pages, pages that do not add up to the total the
-          # first page gave, or a run id twice.
-          list_runs() {
-            local wf="$1" q="$2" out='[]' page=1 raw rows n got=0 total=""
-            while :; do
-              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?$q&per_page=100&page=$page") || { echo null; return 0; }
-              if [ "$page" -eq 1 ]; then total=$(jq '.total_count' <<< "$raw") || { echo null; return 0; }; fi
-              rows=$(jq -c --arg wf "$wf" '[.workflow_runs[]
-                     | {workflow: $wf, id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
-              out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
-              n=$(jq 'length' <<< "$rows")
-              got=$((got + n))
-              if [ "$n" -lt 100 ]; then break; fi
-              page=$((page + 1))
-              if [ "$page" -gt 10 ]; then echo null; return 0; fi
-            done
-            if [ "$got" != "$total" ] || [ "$(jq '[.[].id] | unique | length' <<< "$out")" != "$got" ]; then echo null; return 0; fi
-            echo "$out"
-          }
-          # The same list read twice, every page both times: it counts only when both
-          # reads hold the same runs with the same status (and, for a finished run, the
-          # same finish), since a run can change, leave or join a list between two page
-          # reads. Left unseen: a change after the second read.
-          stable_runs() {
-            local first second
-            first=$(list_runs "$1" "$2")
-            second=$(list_runs "$1" "$2")
-            if [ "$first" = null ] || [ "$second" = null ]; then echo null; return 0; fi
-            local shape='[.[] | [.id, .status, (if .status == "completed" then .updated_at else null end)]] | sort'
-            if [ "$(jq -c "$shape" <<< "$first")" != "$(jq -c "$shape" <<< "$second")" ]; then echo null; return 0; fi
-            echo "$first"
-          }
-          # Every run of the three Redline workflows that has not finished, by each such
-          # status, as one JSON list, or `null` when a list could not be read in full or
-          # changed between its two reads, which drift-heal-plan.mjs counts as busy.
-          # Read with the job's own token.
-          redline_runs() {
-            local out='[]' wf st rows
-            for wf in redline.yml redline-fix.yml redline-post.yml; do
-              for st in requested pending waiting queued in_progress; do
-                rows=$(stable_runs "$wf" "status=$st")
-                if [ "$rows" = null ]; then echo null; return 0; fi
-                out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
-              done
-            done
-            echo "$out"
-          }
-          # Every fix run dispatched at head $1, any status, as a JSON list, or `null`,
-          # read as the lists above are. The platform's fix dispatcher answers a finished
-          # fix run after it, and until it does the head the run read must not move. This
-          # is the list the dispatcher itself reads (event workflow_dispatch, head_sha the
-          # PR head), so a run it would apply is here, however long ago it was created;
-          # one dispatched from another ref is one it never applies.
-          fix_runs_at() {
-            stable_runs redline-fix.yml "event=workflow_dispatch&head_sha=$1"
-          }
-          # askalf's comments on PR #$1 as { line, at } (first line, when posted), every
-          # page, as a JSON list, or `null` when they could not be read in full.
-          fix_comments() {
-            local out='[]' page=1 raw rows n
-            while :; do
-              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/issues/$1/comments?per_page=100&page=$page") || { echo null; return 0; }
-              rows=$(jq -c '[.[] | select(.user.login == "askalf") | {line: ((.body // "") | split("\n")[0]), at: .created_at}]' <<< "$raw") || { echo null; return 0; }
-              out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
-              n=$(jq 'length' <<< "$raw")
-              if [ "$n" -lt 100 ]; then break; fi
-              page=$((page + 1))
-              if [ "$page" -gt 10 ]; then echo null; return 0; fi
-            done
-            echo "$out"
-          }
-          # Why Redline is at work on PR #$1 at head $2, or nothing. The PR's comments
-          # are read only when a finished fix run names it.
+          # Why Redline is at work on PR #$1 at head $2, or nothing. drift-heal-plan.mjs
+          # reads Redline's runs itself, with the job's own token (RUNS_TOKEN): every
+          # unfinished run of the three workflows and every fix run dispatched at the
+          # head, each list in full and twice, so no list passes through the shell and a
+          # list that cannot be read, or changes between the two reads, holds the PR.
           redline_busy() {
-            local runs fixes
-            runs=$(redline_runs)
-            fixes=$(fix_runs_at "$2")
-            if [ "$runs" = null ] || [ "$fixes" = null ]; then
-              echo null > "$plan_dir/runs.json"
-            else
-              jq -c --argjson more "$fixes" '. + $more' <<< "$runs" > "$plan_dir/runs.json"
-            fi
-            if jq -e --arg t "Redline fix $REPO#$1 @ " 'type == "array" and any(.[]; .workflow == "redline-fix.yml" and .status == "completed" and ((.display_title // "") | startswith($t)))' "$plan_dir/runs.json" >/dev/null; then
-              fix_comments "$1" > "$plan_dir/comments.json"
-            else
-              echo '[]' > "$plan_dir/comments.json"
-            fi
-            node "$plan_js" busy "$REPO" "$1" "$2" "$plan_dir/runs.json" "$plan_dir/comments.json"
+            node "$plan_js" check "$REPO" "$1" "$2"
           }
           # The open drift PRs now, against the plan: what changed, or nothing. A PR
           # this run pushed may still show the head it had, since the list can lag a

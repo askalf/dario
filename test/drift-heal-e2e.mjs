@@ -1,7 +1,7 @@
 // drift-pr-heal.yml's Heal step, run as it stands against throwaway repositories: a bare origin that
 // holds master and the drift branches, a fresh clone of it as the job's checkout (on master, with
 // no other local branch, as the runner's), and a stand-in for gh (test/fixtures/drift-heal-gh.mjs)
-// that answers the PR list, Redline's runs and the PRs' comments from a fixture. bash, git, jq, node,
+// that answers the PR list and Redline's runs from a fixture. bash, git, jq, node,
 // sort and the repository's own release scripts are the real ones. Without what the step needs
 // (bash 4 associative arrays, sort -V, jq, git) it is skipped, except in CI, where it fails. The
 // fixtures are removed when the test ends.
@@ -185,9 +185,9 @@ console.log('\n=== a review at a head holds that PR; every open drift PR holds i
     tipOf(fx, 'bot/cc-drift-d') === d && tipOf(fx, 'bot/template-label-x') === x && !r.out.includes('#16'));
   check('the five open drift PRs hold five different versions',
     new Set(['bot/cc-drift-a', 'bot/cc-drift-b', 'bot/cc-drift-c', 'bot/cc-drift-d', 'bot/template-label-x'].map((h) => versionOf(fx, h))).size === 5);
-  check('Redline\'s runs and comments are read with the job\'s token, the PR list with the drift-bot PAT',
+  check('Redline\'s runs are read with the job\'s token, the PR list with the drift-bot PAT, and no comment is read',
     r.calls.some((x2) => x2.args[0] === 'api') && r.calls.filter((x2) => x2.args[0] === 'api').every((x2) => x2.token === 'runs-token')
-    && r.calls.filter((x2) => x2.args[0] === 'pr').every((x2) => x2.token === 'pat-token'));
+    && r.calls.filter((x2) => x2.args[0] === 'pr').every((x2) => x2.token === 'pat-token') && !r.calls.some((x2) => /\/comments/.test(String(x2.args[1]))));
   check('every unfinished status of every Redline workflow is read, and the fix runs at each checked head',
     ['redline.yml', 'redline-fix.yml', 'redline-post.yml'].every((wf) => ['queued', 'in_progress', 'waiting', 'requested', 'pending'].every((st) => r.calls.some((x2) => String(x2.args[1]).includes(`/${wf}/runs?status=${st}&`))))
     && r.calls.some((x2) => String(x2.args[1]).includes(`/redline-fix.yml/runs?event=workflow_dispatch&head_sha=${a}&`)));
@@ -246,6 +246,26 @@ console.log('\n=== a list that changes while it is read counts as unread ===');
     ...(i === 0 ? { goneAfter: { key: 'redline-fix.yml|head', calls: 2 } } : {}) });
   const r4 = heal(fx4, { prs: [pr(13, 'bot/cc-drift-c', c4, 'DIRTY')], runs: Array.from({ length: 101 }, (_, i) => old(i)) });
   check('the per-head fix list that shifts across its page boundary is held as unread', r4.status === 0 && tipOf(fx4, 'bot/cc-drift-c') === c4 && /could not be listed/.test(section(r4.out, 13)), r4.out);
+  const fx5 = fixture();
+  const c5 = draft(fx5, 'bot/cc-drift-c', fx5.old, '1.0.5', 'change c');
+  releaseMaster(fx5, '1.0.5');
+  // C's review moves from queued to waiting between the waiting and queued queries of the first
+  // scan, so that scan misses it; the second scan finds it waiting, and the two differ.
+  const r5 = heal(fx5, { prs: [pr(13, 'bot/cc-drift-c', c5, 'DIRTY')], runs: [
+    { workflow: 'redline.yml', id: 6, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c5, changeAfter: { key: 'redline.yml|queued', calls: 1, status: 'waiting' } },
+  ] });
+  check('a review that moves from queued to waiting between two queries holds the PR', r5.status === 0 && tipOf(fx5, 'bot/cc-drift-c') === c5 && /could not be listed/.test(section(r5.out, 13)), r5.out);
+}
+
+console.log('\n=== a stable list larger than a shell argument is read whole ===');
+{
+  const fx = fixture();
+  const c = draft(fx, 'bot/cc-drift-c', fx.old, '1.0.5', 'change c');
+  releaseMaster(fx, '1.0.5');
+  // 250 queued runs with long names (over 128 KiB as JSON), and C's review on the third page.
+  const crowd = Array.from({ length: 250 }, (_, i) => ({ workflow: 'redline.yml', id: 7000 + i, event: 'pull_request', status: 'queued', display_title: 'z'.repeat(600), head_sha: (i % 10).toString().repeat(40) }));
+  const r = heal(fx, { prs: [pr(13, 'bot/cc-drift-c', c, 'DIRTY')], runs: [...crowd, { workflow: 'redline.yml', id: 1, event: 'pull_request', status: 'queued', display_title: 'chore(drift): change c', head_sha: c }] });
+  check('C, whose review is the 251st queued run, is left as it was', r.status === 0 && tipOf(fx, 'bot/cc-drift-c') === c && /reviewing this head/.test(section(r.out, 13)), r.out);
 }
 
 console.log('\n=== a review that starts while a PR is healed: left as it was, and its version still held ===');
@@ -266,7 +286,7 @@ console.log('\n=== a review that starts while a PR is healed: left as it was, an
   check('F steps over the 1.0.6 that E still holds: 1.0.7', versionOf(fx, 'bot/cc-drift-f') === '1.0.7', versionOf(fx, 'bot/cc-drift-f'));
 }
 
-console.log('\n=== a dispatched re-read holds its PR; a finished fix holds it until the platform answers it ===');
+console.log('\n=== a dispatched re-read holds its PR; a finished fix holds it for the wait ===');
 {
   const fx = fixture();
   const k = draft(fx, 'bot/cc-drift-k', fx.old, '1.0.5', 'change k');
@@ -278,29 +298,28 @@ console.log('\n=== a dispatched re-read holds its PR; a finished fix holds it un
   const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
   const finished = (id, n, head, over = {}) => ({ workflow: 'redline-fix.yml', id, event: 'workflow_dispatch', status: 'completed', conclusion: 'success',
     display_title: `Redline fix askalf/fx#${n} @ ${head}`, head_sha: head, created_at: ago(10), updated_at: ago(5), ...over });
-  const refused = (head, at) => ({ user: { login: 'askalf' }, created_at: at, body: `## Fix not applied at ${head}: refused\n\nThe only finding is about an existing commit.` });
   const r = heal(fx, {
     prs: [pr(51, 'bot/cc-drift-k', k, 'DIRTY'), pr(52, 'bot/cc-drift-l', l, 'DIRTY'), pr(53, 'bot/cc-drift-m', m, 'DIRTY'),
       pr(54, 'bot/cc-drift-n', n2, 'DIRTY'), pr(55, 'bot/cc-drift-q', q, 'DIRTY')],
     runs: [
       { workflow: 'redline.yml', id: 9, event: 'workflow_dispatch', status: 'queued', display_title: `Redline review askalf/fx#51 @ ${k} (re-read)`, head_sha: 'd'.repeat(40) },
-      finished(10, 52, l), finished(11, 53, m),
-      // N: a first fix run refused, then a retry at the same head that finished after the refusal.
+      // L: its fix run finished seven hours ago, past the wait.
+      finished(10, 52, l, { created_at: ago(7 * 60 + 10), updated_at: ago(7 * 60) }),
+      // L: a fix run dispatched from master that names L, lately: never applied by the dispatcher, so it holds nothing.
+      finished(15, 52, l, { head_sha: 'b'.repeat(40) }),
+      // M: a fix run finished five minutes ago.
+      finished(11, 53, m),
+      // N: a first fix run, then a retry at the same head that finished lately.
       finished(12, 54, n2, { created_at: ago(40), updated_at: ago(30) }), finished(13, 54, n2, { created_at: ago(20), updated_at: ago(5) }),
       // Q: created two days ago and re-run lately.
       finished(14, 55, q, { created_at: ago(2 * 24 * 60), updated_at: ago(5) }),
-      // L: a fix run dispatched from master that names L: never applied by the dispatcher, so it holds nothing.
-      finished(15, 52, l, { head_sha: 'b'.repeat(40) }),
     ],
-    comments: { 52: [refused(l, ago(1))], 54: [refused(n2, ago(25))] },
   });
   check('K, with a re-read queued for its head, is left as it was', r.status === 0 && tipOf(fx, 'bot/cc-drift-k') === k && /SKIPPED: Redline is at work on this head/.test(section(r.out, 51)), r.out);
-  check('M, whose fix run finished and is not yet answered, is left as it was', tipOf(fx, 'bot/cc-drift-m') === m && /not yet applied or refused at this head/.test(section(r.out, 53)), section(r.out, 53));
-  check('L, whose finished fix the platform answered, is healed clear of the 1.0.5 the others hold: 1.0.6', versionOf(fx, 'bot/cc-drift-l') === '1.0.6', versionOf(fx, 'bot/cc-drift-l'));
-  check('the PRs\' comments are read, and with the job\'s token', r.calls.some((x2) => /\/issues\/\d+\/comments\?/.test(String(x2.args[1])))
-    && r.calls.filter((x2) => /\/issues\/\d+\/comments\?/.test(String(x2.args[1]))).every((x2) => x2.token === 'runs-token'));
-  check('N, whose retry finished after the first run\'s refusal, is left as it was', tipOf(fx, 'bot/cc-drift-n') === n2 && /not yet applied or refused at this head/.test(section(r.out, 54)), section(r.out, 54));
-  check('Q, a fix run created two days ago and re-run lately, is left as it was', tipOf(fx, 'bot/cc-drift-q') === q && /not yet applied or refused at this head/.test(section(r.out, 55)), section(r.out, 55));
+  check('M, whose fix run finished five minutes ago, is left as it was, and the reason says until when', tipOf(fx, 'bot/cc-drift-m') === m && /its fix is waited for until/.test(section(r.out, 53)), section(r.out, 53));
+  check('N, whose retry finished lately, is left as it was', tipOf(fx, 'bot/cc-drift-n') === n2 && /its fix is waited for until/.test(section(r.out, 54)), section(r.out, 54));
+  check('Q, a fix run created two days ago and re-run lately, is left as it was', tipOf(fx, 'bot/cc-drift-q') === q && /its fix is waited for until/.test(section(r.out, 55)), section(r.out, 55));
+  check('L, whose fix finished past the wait and whose other fix was dispatched from master, is healed clear of the 1.0.5 the others hold: 1.0.6', versionOf(fx, 'bot/cc-drift-l') === '1.0.6', versionOf(fx, 'bot/cc-drift-l'));
 }
 
 console.log('\n=== Redline\'s runs that cannot be listed hold every PR ===');
