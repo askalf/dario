@@ -26,12 +26,15 @@ name: Drift PR heal (conflict + version collision)
 # able to touch a human's PR, and the branch-prefix filter is the only thing
 # standing between those two facts — keep it in step with auto-merge-sweep.yml.
 #
-# WAITS for Redline. A heal pushes a new head, and Redline drops a review
-# whose head moved and a fix run pushes onto the branch it read. So a PR with
-# a review, fix or verdict post queued or running at its head is skipped, and
-# the next run heals it. Every open drift PR holds the version on its branch,
-# skipped or not, so a renumber steps over all of them
-# (scripts/drift-heal-plan.mjs).
+# WAITS for Redline. A heal pushes a new head: Redline drops a review whose
+# head moved, and the platform's fix dispatcher drops a finished fix run's
+# commits when the branch moved after the run read it. So a PR with a review,
+# fix or verdict post not finished at its head, or a fix run finished there
+# and not yet answered, is skipped, and the next run heals it. Every open
+# drift PR holds the version on its branch, skipped or not, so a renumber
+# steps over all of them, and a push waits for a new plan when the open drift
+# PRs changed during the run (scripts/drift-heal-plan.mjs). A review that
+# starts in the seconds between the last check and the push is not seen.
 #
 # REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
 # the two-file shape our automation produces and exits 1 on anything else;
@@ -71,9 +74,11 @@ jobs:
     runs-on: [self-hosted, dario-exec]
     timeout-minutes: 15
     permissions:
-      contents: write
+      # The job's own token only reads: the checkout and the push use the drift-bot PAT.
+      contents: read
       pull-requests: read
-      # Redline's runs are listed with the job's own token, so the heal can wait for them.
+      # Redline's runs and the PRs' comments are read with the job's own token, so the heal can
+      # wait for them.
       actions: read
     steps:
       - name: Check out with an identity whose pushes trigger CI
@@ -153,27 +158,86 @@ jobs:
           cp scripts/drift-heal-plan.mjs scripts/_drift-patch-helpers.mjs "$plan_dir/"
           plan_js="$plan_dir/drift-heal-plan.mjs"
 
-          # Redline's queued and running reviews, fixes and verdict posts as one JSON
-          # list, or `null` when a list could not be read, which drift-heal-plan.mjs
-          # counts as busy. The newest 100 runs of each workflow: one still queued or
-          # running is among them. Read with the job's own token (actions: read).
+          # Redline's runs as one JSON list, or `null` when a list could not be read
+          # in full, which drift-heal-plan.mjs counts as busy: every run of the three
+          # workflows not finished, by each such status and every page of it, and
+          # the fix runs created in the last day that finished (the platform's fix
+          # dispatcher answers a finished fix run after it, and until it does the
+          # head the run read must not move). Read with the job's own token.
           redline_runs() {
-            local out='[]' wf page
+            local out='[]' wf st page raw rows n kept cutoff
             for wf in redline.yml redline-fix.yml redline-post.yml; do
-              if ! page=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?per_page=100" \
-                          | jq -c --arg wf "$wf" '[.workflow_runs[] | select(.status != "completed")
-                                | {workflow: $wf, id, event, status, display_title, head_sha}]'); then
-                echo null
-                return 0
-              fi
-              out=$(jq -c --argjson page "$page" '. + $page' <<< "$out")
+              for st in queued in_progress waiting requested pending; do
+                page=1
+                while :; do
+                  raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/$wf/runs?status=$st&per_page=100&page=$page") || { echo null; return 0; }
+                  rows=$(jq -c --arg wf "$wf" '[.workflow_runs[]
+                         | {workflow: $wf, id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
+                  out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
+                  n=$(jq 'length' <<< "$rows")
+                  if [ "$n" -lt 100 ]; then break; fi
+                  page=$((page + 1))
+                  if [ "$page" -gt 10 ]; then echo null; return 0; fi
+                done
+              done
+            done
+            cutoff=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:%SZ)
+            page=1
+            while :; do
+              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/actions/workflows/redline-fix.yml/runs?status=completed&per_page=100&page=$page") || { echo null; return 0; }
+              rows=$(jq -c --arg c "$cutoff" '[.workflow_runs[] | select(.created_at >= $c)
+                     | {workflow: "redline-fix.yml", id, event, status, conclusion, display_title, head_sha, updated_at}]' <<< "$raw") || { echo null; return 0; }
+              out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
+              n=$(jq '.workflow_runs | length' <<< "$raw")
+              kept=$(jq 'length' <<< "$rows")
+              if [ "$n" -lt 100 ] || [ "$kept" -lt "$n" ]; then break; fi
+              page=$((page + 1))
+              if [ "$page" -gt 10 ]; then echo null; return 0; fi
             done
             echo "$out"
           }
-          # Why Redline is at work on PR $1 at head $2, or nothing.
+          # The first lines of askalf's comments on PR #$1, every page, as a JSON
+          # list, or `null` when they could not be read in full.
+          fix_comments() {
+            local out='[]' page=1 raw rows n
+            while :; do
+              raw=$(GH_TOKEN="$RUNS_TOKEN" gh api "repos/$REPO/issues/$1/comments?per_page=100&page=$page") || { echo null; return 0; }
+              rows=$(jq -c '[.[] | select(.user.login == "askalf") | ((.body // "") | split("\n")[0])]' <<< "$raw") || { echo null; return 0; }
+              out=$(jq -c --argjson more "$rows" '. + $more' <<< "$out")
+              n=$(jq 'length' <<< "$raw")
+              if [ "$n" -lt 100 ]; then break; fi
+              page=$((page + 1))
+              if [ "$page" -gt 10 ]; then echo null; return 0; fi
+            done
+            echo "$out"
+          }
+          # Why Redline is at work on PR #$1 at head $2, or nothing. The PR's comments
+          # are read only when a finished fix run names it.
           redline_busy() {
             redline_runs > "$plan_dir/runs.json"
-            node "$plan_js" busy "$REPO" "$1" "$2" "$plan_dir/runs.json"
+            if jq -e --arg t "Redline fix $REPO#$1 @ " 'type == "array" and any(.[]; .workflow == "redline-fix.yml" and .status == "completed" and ((.display_title // "") | startswith($t)))' "$plan_dir/runs.json" >/dev/null; then
+              fix_comments "$1" > "$plan_dir/comments.json"
+            else
+              echo '[]' > "$plan_dir/comments.json"
+            fi
+            node "$plan_js" busy "$REPO" "$1" "$2" "$plan_dir/runs.json" "$plan_dir/comments.json"
+          }
+          # The open drift PRs now, against the plan: what changed, or nothing. A PR
+          # this run pushed may still show the head it had, since the list can lag a
+          # push.
+          plan_changed() {
+            local k
+            gh pr list --repo "$REPO" --state open --limit 1000 \
+              --json number,headRefName,headRefOid,headRepositoryOwner \
+              | jq -c --arg owner "${REPO%%/*}" '[.[]
+                   | select(.headRepositoryOwner.login == $owner)
+                   | select(.headRefName | startswith("bot/cc-drift-")
+                            or startswith("bot/template-label-")
+                            or startswith("bot/template-rebake-"))]' > "$plan_dir/drift-now.json"
+            for k in "${!planned[@]}"; do
+              jq -n --arg k "$k" --arg a "${planned[$k]}" --arg b "${pushed_from[$k]:-}" '{($k): ([$a, $b] | map(select(. != "")))}'
+            done | jq -s 'add // {}' > "$plan_dir/expected.json"
+            node "$plan_js" changed "$plan_dir/expected.json" "$plan_dir/drift-now.json"
           }
 
           # The version each open drift PR holds, read at the commit the list names.
@@ -182,6 +246,7 @@ jobs:
           # moved since the list is left for the next run, which lists it again.
           declare -A held=()
           declare -A planned=()
+          declare -A pushed_from=()
           for j in $(seq 0 $(( $(jq 'length' <<< "$drift") - 1 ))); do
             n=$(jq -r ".[$j].number" <<< "$drift")
             h=$(jq -r ".[$j].headRefName" <<< "$drift")
@@ -231,8 +296,9 @@ jobs:
             if [ "$(git rev-parse HEAD)" != "${planned[$pr]}" ]; then
               v=$(jq -r '.version // ""' package.json 2>/dev/null) || v=""
               if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "  STOPPED: moved since the list was read and holds no x.y.z version; nothing more is healed this run"
-                break
+                echo "  STOPPED: moved since the list was read and holds no x.y.z version; nothing more is healed"
+                echo "healed=$healed refused=$refused skipped=$skipped"
+                exit 1
               fi
               held[$pr]="$v"
               echo "  SKIPPED: moved since the list was read; the next run heals it"
@@ -394,6 +460,17 @@ jobs:
               floor="$head_ver"
               continue
             fi
+            # The versions stepped over were read from the open drift PRs as the plan
+            # found them. If that set or a head in it changed since (a draft renumbered,
+            # a drift PR opened), no push is made from the old plan; the next run plans
+            # again.
+            change=$(plan_changed)
+            if [ -n "$change" ]; then
+              echo "  STOPPED: the open drift PRs changed during the run ($change); nothing more is healed, the next run plans again"
+              git reset -q --hard "origin/$head"
+              echo "healed=$healed refused=$refused skipped=$skipped"
+              exit 0
+            fi
             # Redline may have started on this head while it was healed here: check
             # again just before the push, and leave the branch as it was if so.
             busy=$(redline_busy "$pr" "${planned[$pr]}")
@@ -422,9 +499,11 @@ jobs:
             fi
             git push --force-with-lease="$head:$(git rev-parse "origin/$head")" origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
-            # Claim it for the rest of this run.
+            # Claim it for the rest of this run, and expect the pushed head.
             floor="$head_ver"
             held[$pr]="$head_ver"
+            pushed_from[$pr]="${planned[$pr]}"
+            planned[$pr]="$(git rev-parse HEAD)"
             healed=$((healed + 1))
           done
 
