@@ -14,9 +14,10 @@ export const DEFAULT_MAX_BODY_MB = 10;
 
 /**
  * The largest limit in MiB. The body is buffered and decoded as one string
- * before it is parsed, so the limit has to stay well inside what that can hold.
+ * before it is parsed, so the limit has to stay inside what that can hold, 32-bit
+ * Node's string length (256 MiB less 16 code units) included.
  */
-export const MAX_BODY_MB_CEILING = 256;
+export const MAX_BODY_MB_CEILING = 128;
 
 /**
  * The request body limit in bytes. A missing size, or one that is not a whole
@@ -44,12 +45,17 @@ export function parseMaxBodyMb(raw: string): number | undefined {
  * The limit the command line and environment ask for, in MiB, or undefined for
  * the default. The flag wins over the env var, even as `--max-body-mb=0`, which
  * keeps the default. An env value that is not a whole number of MiB is
- * ignored. A flag value that is not one, or a bare `--max-body-mb` with no
- * value, throws, naming the unit; the caller exits with the message.
+ * ignored. A flag value that is not one, a bare `--max-body-mb` with no
+ * value, or the flag given more than once throws, naming the unit; the caller
+ * exits with the message.
  */
 export function resolveMaxBodyMb(argv: readonly string[], env: string | undefined): number | undefined {
   const prefix = '--max-body-mb=';
-  const found = argv.find((a) => a === '--max-body-mb' || a.startsWith(prefix));
+  const given = argv.filter((a) => a === '--max-body-mb' || a.startsWith(prefix));
+  if (given.length > 1) {
+    throw new Error(`Invalid --max-body-mb: given ${given.length} times. Give it once, as a whole number of MiB from 1 to ${MAX_BODY_MB_CEILING}.`);
+  }
+  const found = given[0];
   if (found !== undefined) {
     const raw = found.startsWith(prefix) ? found.slice(prefix.length) : '';
     if (raw === '0') return undefined;

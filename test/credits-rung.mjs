@@ -133,16 +133,20 @@ const PROXY_ARMED_PORT = await freePort();
 const PROXY_NOKEY_PORT = await freePort();
 const PROXY_FORBIDDEN_PORT = await freePort();
 const PROXY_RECOVER_PORT = await freePort();
+const PROXY_BETA_PORT = await freePort();
 const KEY = 'sk-ant-test-credits-rung';
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-credits-rung-'));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
-// The seat path needs no inherited upstream key, and no refresh-lock service
-// may be asked for newer credentials at startup.
-for (const k of ['DARIO_CREDITS_API_KEY', 'ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN']) {
+// The seat path needs no inherited upstream key, no refresh-lock service may be
+// asked for newer credentials at startup, and nothing may reach the operator's
+// request log or ledger: the log settings are cleared and the ledger is turned
+// off the supported way (DARIO_LEDGER=0).
+for (const k of ['DARIO_CREDITS_API_KEY', 'ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN', 'DARIO_LOG_FILE', 'DARIO_LOG_BODIES', 'DARIO_LEDGER_PATH']) {
   delete process.env[k];
 }
+process.env.DARIO_LEDGER = '0';
 
 await mkdir(join(tmpHome, '.dario', 'accounts'), { recursive: true });
 await writeFile(
@@ -211,6 +215,14 @@ const makeFetch = (calls, keyAnswer = 'ok') => {
       error: { type: 'invalid_request_error', message: 'The long context beta is not yet available for this subscription.' },
     }), { status: 400, headers: { 'content-type': 'application/json', 'request-id': 'req_credits_lc' } });
   }
+  if (call.apiKey && keyAnswer === 'unexpected-beta-once' && keyHits++ === 0) {
+    // The key refuses the one beta the client sent, which the proxy recovers
+    // from by re-dispatching without it.
+    return new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'Unexpected value(s) `future-beta-2099-01-01` for the `anthropic-beta` header. Please consult our documentation at docs.anthropic.com or try again without the header.' },
+    }), { status: 400, headers: { 'content-type': 'application/json', 'request-id': 'req_credits_beta' } });
+  }
   if (call.apiKey && keyAnswer === 'forbidden') {
     return new Response(JSON.stringify({
       type: 'error',
@@ -249,17 +261,20 @@ const armedCalls = [];
 const nokeyCalls = [];
 const forbiddenCalls = [];
 const recoverCalls = [];
+const betaCalls = [];
 const common = { host: '127.0.0.1', passthrough: false, verbose: false, noLiveCapture: true };
 await startProxy({ ...common, port: PROXY_ARMED_PORT, poolFallbackModel: 'credits:claude-sonnet-5', creditsApiKey: KEY, fetchImpl: makeFetch(armedCalls) });
 await startProxy({ ...common, port: PROXY_NOKEY_PORT, poolFallbackModel: 'credits:claude-sonnet-5', creditsApiKey: '', fetchImpl: makeFetch(nokeyCalls) });
 await startProxy({ ...common, port: PROXY_FORBIDDEN_PORT, poolFallbackModel: 'credits:claude-sonnet-5', creditsApiKey: KEY, fetchImpl: makeFetch(forbiddenCalls, 'forbidden') });
 await startProxy({ ...common, port: PROXY_RECOVER_PORT, poolFallbackModel: 'credits:claude-sonnet-5', creditsApiKey: KEY, fetchImpl: makeFetch(recoverCalls, 'long-context-once') });
+await startProxy({ ...common, port: PROXY_BETA_PORT, poolFallbackModel: 'credits:claude-sonnet-5', creditsApiKey: KEY, fetchImpl: makeFetch(betaCalls, 'unexpected-beta-once') });
 
 const BASE_ARMED = `http://127.0.0.1:${PROXY_ARMED_PORT}`;
 const BASE_NOKEY = `http://127.0.0.1:${PROXY_NOKEY_PORT}`;
 const BASE_FORBIDDEN = `http://127.0.0.1:${PROXY_FORBIDDEN_PORT}`;
 const BASE_RECOVER = `http://127.0.0.1:${PROXY_RECOVER_PORT}`;
-for (const base of [BASE_ARMED, BASE_NOKEY, BASE_FORBIDDEN, BASE_RECOVER]) {
+const BASE_BETA = `http://127.0.0.1:${PROXY_BETA_PORT}`;
+for (const base of [BASE_ARMED, BASE_NOKEY, BASE_FORBIDDEN, BASE_RECOVER, BASE_BETA]) {
   for (let i = 0; i < 50; i++) {
     try { await fetch(`${base}/health`); break; } catch { await sleep(100); }
   }
@@ -390,6 +405,24 @@ header('a long-context rejection on the key: the retry does not bring the stripp
   const keyCalls = recoverCalls.filter((c) => c.apiKey === KEY);
   check('the key was asked twice: the rejection, then the retry', keyCalls.length === 2, JSON.stringify(recoverCalls.map((c) => ({ key: c.apiKey === KEY, beta: c.beta }))));
   check('neither key request carries an anthropic-beta header', keyCalls.every((c) => c.beta === null), JSON.stringify(keyCalls.map((c) => c.beta)));
+}
+
+header('an unexpected-beta rejection that removes the last beta: the retry sends no beta header');
+{
+  // The one beta the client sent passes through the rung, the key refuses it,
+  // and the retry has nothing left to send. An absent header is required, not
+  // an empty one.
+  const res = await fetch(`${BASE_BETA}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'anthropic-beta': 'future-beta-2099-01-01' },
+    body: JSON.stringify({ model: 'claude-opus-5', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }),
+  });
+  const text = await res.text();
+  check('status is 200 after the retry', res.status === 200, `${res.status} ${text.slice(0, 200)}`);
+  const keyCalls = betaCalls.filter((c) => c.apiKey === KEY);
+  check('the key was asked twice: the rejection, then the retry', keyCalls.length === 2, JSON.stringify(betaCalls.map((c) => ({ key: c.apiKey === KEY, beta: c.beta }))));
+  check('the first key request carried the beta the client sent', keyCalls[0]?.beta === 'future-beta-2099-01-01', String(keyCalls[0]?.beta));
+  check('the retry has no anthropic-beta header (not an empty one)', keyCalls[1]?.beta === null, JSON.stringify(keyCalls[1]?.beta));
 }
 
 header('nothing reached the network but the stubs');

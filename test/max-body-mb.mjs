@@ -31,9 +31,12 @@ const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const here = dirname(fileURLToPath(import.meta.url));
 
-for (const k of ['ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_MAX_BODY_MB', 'DARIO_CREDITS_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN']) {
+// Nothing may reach the operator's request log or ledger: the log settings are
+// cleared and the ledger is turned off the supported way (DARIO_LEDGER=0).
+for (const k of ['ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_MAX_BODY_MB', 'DARIO_CREDITS_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN', 'DARIO_LOG_FILE', 'DARIO_LOG_BODIES', 'DARIO_LEDGER_PATH']) {
   delete process.env[k];
 }
+process.env.DARIO_LEDGER = '0';
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-max-body-'));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
@@ -54,8 +57,8 @@ header('parsing: digits only, whole MiB');
   check('empty is refused', parseMaxBodyMb('') === undefined);
   check('0 is not a limit', parseMaxBodyMb('0') === undefined);
   check('a leading zero is still digits', parseMaxBodyMb('064') === 64);
-  check('the ceiling is 256 and is accepted', MAX_BODY_MB_CEILING === 256 && parseMaxBodyMb('256') === 256);
-  check('one past the ceiling is refused', parseMaxBodyMb('257') === undefined);
+  check('the ceiling is 128 and is accepted', MAX_BODY_MB_CEILING === 128 && parseMaxBodyMb('128') === 128);
+  check('one past the ceiling is refused', parseMaxBodyMb('129') === undefined);
   check('a 400-digit value is refused', parseMaxBodyMb('9'.repeat(400)) === undefined);
 }
 
@@ -67,13 +70,28 @@ header('resolution: argv and env');
   check('the flag wins over the env var', resolveMaxBodyMb(['--max-body-mb=32'], '64') === 32);
   check('an explicit flag 0 keeps the default even with a valid env', resolveMaxBodyMb(['--max-body-mb=0'], '64') === undefined);
   check('a flag with whitespace around 0 is not the zero sentinel', (() => { try { resolveMaxBodyMb(['--max-body-mb= 0'], '64'); return false; } catch { return true; } })());
-  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '0', '', ' 64', '64 ', '257', '99999999999999']) {
+  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '0', '', ' 64', '64 ', '129', '99999999999999']) {
     check(`env ${JSON.stringify(bad)} is ignored (default)`, resolveMaxBodyMb([], bad) === undefined);
   }
-  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '', ' 64', '64 ', '257', '99999999999999']) {
+  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '', ' 64', '64 ', '129', '99999999999999']) {
     let msg = null;
     try { resolveMaxBodyMb([`--max-body-mb=${bad}`], '64'); } catch (e) { msg = e.message; }
     check(`flag ${JSON.stringify(bad)} throws and names MiB`, msg !== null && msg.includes('MiB') && !/\bms\b/.test(msg), String(msg));
+  }
+}
+
+header('a repeated --max-body-mb is refused');
+{
+  for (const argv of [
+    ['--max-body-mb=16', '--max-body-mb=6.4'],
+    ['--max-body-mb=16', '--max-body-mb'],
+    ['--max-body-mb', '--max-body-mb=16'],
+    ['--max-body-mb=16', '--max-body-mb=16'],
+    ['--max-body-mb=16', '--max-body-mb=0'],
+  ]) {
+    let msg = null;
+    try { resolveMaxBodyMb(['proxy', ...argv], '64'); } catch (e) { msg = e.message; }
+    check(`${argv.join(' ')} throws a MiB diagnostic`, msg !== null && msg.includes('MiB') && msg.includes('Invalid --max-body-mb'), String(msg));
   }
 }
 
@@ -86,7 +104,7 @@ header('a bare --max-body-mb is a missing value');
 
 header('the CLI refuses a bad flag value before it binds a port');
 {
-  for (const bad of ['64MiB', '64oops', '6.4', ' 64', '257']) {
+  for (const bad of ['64MiB', '64oops', '6.4', ' 64', '129']) {
     const r = spawnSync(process.execPath, [join(here, '..', 'dist', 'cli.js'), 'proxy', `--port=${await freePort()}`, `--max-body-mb=${bad}`], {
       env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
       encoding: 'utf8',
@@ -102,6 +120,16 @@ header('the CLI refuses a bad flag value before it binds a port');
   });
   check('a bare --max-body-mb exits 1', bare.status === 1, `status ${bare.status}`);
   check('...with a MiB error on stderr', /Invalid --max-body-mb value/.test(bare.stderr) && bare.stderr.includes('MiB'), bare.stderr.slice(0, 200));
+  // A valid occurrence followed by an invalid, bare or second one must not bind at the first.
+  for (const extra of [['--max-body-mb=16', '--max-body-mb=6.4'], ['--max-body-mb=16', '--max-body-mb'], ['--max-body-mb=16', '--max-body-mb=16']]) {
+    const r = spawnSync(process.execPath, [join(here, '..', 'dist', 'cli.js'), 'proxy', `--port=${await freePort()}`, ...extra], {
+      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    check(`${extra.join(' ')} exits 1`, r.status === 1, `status ${r.status}`);
+    check('...with a MiB error on stderr', /Invalid --max-body-mb/.test(r.stderr) && r.stderr.includes('MiB'), r.stderr.slice(0, 200));
+  }
 }
 
 header('the byte limit stays within the ceiling');
@@ -113,7 +141,7 @@ header('the byte limit stays within the ceiling');
   check('NaN keeps the default', resolveMaxBodyBytes(Number.NaN) === 10 * MIB);
   check('Infinity keeps the default', resolveMaxBodyBytes(Infinity) === 10 * MIB);
   check('Number.MAX_VALUE keeps the default, not an infinite limit', resolveMaxBodyBytes(Number.MAX_VALUE) === 10 * MIB);
-  check('the ceiling itself is taken', resolveMaxBodyBytes(MAX_BODY_MB_CEILING) === 256 * MIB);
+  check('the ceiling itself is taken', resolveMaxBodyBytes(MAX_BODY_MB_CEILING) === 128 * MIB);
   check('one past the ceiling keeps the default', resolveMaxBodyBytes(MAX_BODY_MB_CEILING + 1) === 10 * MIB);
   check('1024 keeps the default', resolveMaxBodyBytes(1024) === 10 * MIB);
   check('a fraction of a MiB keeps the default', resolveMaxBodyBytes(2.5) === 10 * MIB);
