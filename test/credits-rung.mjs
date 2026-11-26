@@ -95,6 +95,10 @@ header('creditsHeaders: a plain API client, nothing of Claude Code');
   check('the OAuth beta is removed, the client\'s other betas stay', h['anthropic-beta'] === 'interleaved-thinking-2025-05-14');
   const none = creditsHeaders('sk-ant-test', 'oauth-2025-04-20');
   check('a beta list that was only the OAuth flag yields no beta header at all', !('anthropic-beta' in none));
+  const cc = creditsHeaders('sk-ant-test', 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-1m-2025-08-07');
+  check('the Claude Code beta is removed with the OAuth one, every other beta stays', cc['anthropic-beta'] === 'interleaved-thinking-2025-05-14,context-1m-2025-08-07', String(cc['anthropic-beta']));
+  check('a beta list of only the Claude Code beta yields no beta header at all', !('anthropic-beta' in creditsHeaders('sk-ant-test', 'claude-code-20250219')));
+  check('a list of only the Claude Code and OAuth betas yields no beta header at all', !('anthropic-beta' in creditsHeaders('sk-ant-test', 'claude-code-20250219, oauth-2025-04-20')));
   check('no client beta: no beta header', !('anthropic-beta' in creditsHeaders('sk-ant-test', undefined)));
   check('nothing of Claude Code\'s identity is in the set',
     Object.keys(h).every((k) => !/^x-(app|claude|stainless)/i.test(k) && k.toLowerCase() !== 'user-agent'), Object.keys(h).join(','));
@@ -226,7 +230,7 @@ for (const base of [BASE_ARMED, BASE_NOKEY, BASE_FORBIDDEN]) {
 
 const messages = (base) => fetch(`${base}/v1/messages`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20,interleaved-thinking-2025-05-14' },
+  headers: { 'Content-Type': 'application/json', 'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14' },
   body: JSON.stringify({ model: 'claude-opus-5', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }),
 });
 const chat = (base) => fetch(`${base}/v1/chat/completions`, {
@@ -248,7 +252,7 @@ header('armed: the seat 429s mid-flight, the key serves the same request');
   const key = armedCalls[1];
   check('the key request carries x-api-key and no bearer', key && key.apiKey === KEY && key.auth === null, JSON.stringify({ keyMatches: key?.apiKey === KEY, auth: key?.auth === null ? null : 'present' }));
   check('the key request went to the Messages path', key && /\/v1\/messages(\?|$)/.test(key.url), key?.url);
-  check('the OAuth beta is gone, the client\'s other beta stays', key && key.beta === 'interleaved-thinking-2025-05-14', String(key?.beta));
+  check('the OAuth and Claude Code betas are gone, the client\'s other beta stays', key && key.beta === 'interleaved-thinking-2025-05-14', String(key?.beta));
   check('nothing of Claude Code\'s user agent', key && (key.userAgent === null || !/claude-cli/i.test(key.userAgent)), String(key?.userAgent));
   check('the model is swapped for the rung\'s', key?.body?.model === 'claude-sonnet-5', JSON.stringify(key?.body?.model));
   check('the client\'s own messages go out', key?.body?.messages?.[0]?.content === 'ping', JSON.stringify(key?.body?.messages));

@@ -83,7 +83,18 @@ import {
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
-const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
+/** Default request body limit in MiB: generous for large prompts, prevents abuse. */
+export const DEFAULT_MAX_BODY_MB = 10;
+
+/**
+ * The request body limit in bytes. The body is buffered in memory before it is
+ * parsed, so the limit is also the largest buffer one request can hold. A
+ * missing, non-finite or non-positive size keeps the default.
+ */
+export function resolveMaxBodyBytes(maxBodyMb: number | undefined): number {
+  const mb = maxBodyMb !== undefined && Number.isFinite(maxBodyMb) && maxBodyMb > 0 ? maxBodyMb : DEFAULT_MAX_BODY_MB;
+  return mb * 1024 * 1024;
+}
 // Until the response streams: the whole wait. While a 2xx streams: the longest
 // gap between two chunks (src/upstream-deadline.ts). 5 min, as in the Anthropic SDK.
 const UPSTREAM_TIMEOUT_MS = 300_000;
@@ -1306,6 +1317,12 @@ interface ProxyOptions {
    * is accepted while the wait runs. dario#1370.
    */
   shutdownGraceMs?: number;
+  /**
+   * Largest request body in MiB. Past it the proxy answers 413 and names the
+   * limit. The body is buffered in memory, so a larger limit means a larger
+   * buffer per request. Default 10. `--max-body-mb` / `DARIO_MAX_BODY_MB`.
+   */
+  maxBodyMb?: number;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -1842,6 +1859,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
   const verbose = opts.verbose ?? false;
+  const maxBodyBytes = resolveMaxBodyBytes(opts.maxBodyMb);
   const passthrough = opts.passthrough ?? false;
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
@@ -4532,10 +4550,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         for await (const chunk of req) {
           const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
           totalBytes += buf.length;
-          if (totalBytes > MAX_BODY_BYTES) {
+          if (totalBytes > maxBodyBytes) {
             clearTimeout(bodyTimeout);
             res.writeHead(413, JSON_HEADERS);
-            res.end(JSON.stringify({ error: 'Request body too large', max: `${MAX_BODY_BYTES / 1024 / 1024}MB` }));
+            res.end(JSON.stringify({ error: 'Request body too large', max: `${maxBodyBytes / 1024 / 1024}MB` }));
             return;
           }
           chunks.push(buf);
