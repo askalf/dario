@@ -28,8 +28,10 @@
 // by a 10 s wait. If close never arrives, the case fails with a fixed message, the
 // output stays unread, and the child stays tracked so the final cleanup kills it
 // again. A request that fails or runs past its 60 s deadline fails the case, and
-// the child is still stopped and closed before its stderr is read. The temp home
-// is removed in the final cleanup.
+// the child is still stopped and closed before its stderr is read. The fixture
+// account is written inside the same try as the cases, so the temp home is
+// removed in the final cleanup even when writing it fails; a removal that fails
+// is reported as a failed check.
 
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -57,19 +59,24 @@ const CLOSE_DEADLINE_MS = 10_000;
 const READY_LINE = 'Your Claude subscription is now an API.';
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-max-body-cli-'));
-await mkdir(join(tmpHome, '.dario', 'accounts'), { recursive: true });
-await writeFile(
-  join(tmpHome, '.dario', 'accounts', 'main.json'),
-  JSON.stringify({
-    alias: 'main',
-    accessToken: 'claude-access-token',
-    refreshToken: 'claude-refresh-token',
-    expiresAt: Date.now() + 6 * 3_600_000,
-    scopes: ['user:inference'],
-    deviceId: 'dev-1',
-    accountUuid: 'uuid-1',
-  }),
-);
+
+// The fixture account. Written inside the try below, so a failed write still
+// reaches the final cleanup that removes tmpHome.
+async function writeFixture() {
+  await mkdir(join(tmpHome, '.dario', 'accounts'), { recursive: true });
+  await writeFile(
+    join(tmpHome, '.dario', 'accounts', 'main.json'),
+    JSON.stringify({
+      alias: 'main',
+      accessToken: 'claude-access-token',
+      refreshToken: 'claude-refresh-token',
+      expiresAt: Date.now() + 6 * 3_600_000,
+      scopes: ['user:inference'],
+      deviceId: 'dev-1',
+      accountUuid: 'uuid-1',
+    }),
+  );
+}
 
 // The OS variables a Node child needs, matched case-insensitively (Windows
 // spells PATH as Path). Nothing else is inherited.
@@ -230,13 +237,18 @@ async function runCase(label, extraArgs, extraEnv, raised) {
 }
 
 try {
+  await writeFixture();
   await runCase('no flag, no env: the default limit', [], {}, false);
   await runCase('--max-body-mb=16: the CLI passes it through', ['--max-body-mb=16'], {}, true);
   await runCase('DARIO_MAX_BODY_MB=16: the CLI passes it through', [], { DARIO_MAX_BODY_MB: '16' }, true);
 } finally {
   for (const c of children) { try { c.kill('SIGKILL'); } catch { /* already gone */ } }
   // tmpHome is the mkdtemp directory this test made, never the OS temp dir itself.
-  await rm(tmpHome, { recursive: true, force: true }).catch(() => {});
+  try {
+    await rm(tmpHome, { recursive: true, force: true });
+  } catch (err) {
+    check('the temp home was removed', false, `${tmpHome}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
