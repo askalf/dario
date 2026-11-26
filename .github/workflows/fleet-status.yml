@@ -77,7 +77,7 @@ jobs:
       checks: read
       statuses: write
     steps:
-      - uses: askalf/ci/actions/fleet-status@12840236ea760c3fcc1b846abc1f852ab9e235b2 # main 2026-11-25, askalf/ci#244
+      - uses: askalf/ci/actions/fleet-status@f866115022bb2a95e533d49345a5042485600951 # main 2026-11-26, askalf/ci#243
         with:
           pr: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           head-repo: ${{ github.event.workflow_run.head_repository.full_name }}
