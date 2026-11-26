@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.25.0] - 2026-11-26
+
 - **The credits rung no longer forwards the Claude Code beta, so a funded key serves a Claude Code request.** The rung sends a plain API request and already dropped `oauth-2025-04-20` from the client's `anthropic-beta` list, but it kept `claude-code-20250219`, which Claude Code always sends. With that beta Anthropic answers a funded Console key `400 billing_required`; without it the request is served. The rung now drops both and forwards every other beta. A list that held only those two sends no `anthropic-beta` header, and a retry after a long-context rejection on the key sends none either. dario#1927.
 - **The request body limit is configurable with `--max-body-mb=N` or `DARIO_MAX_BODY_MB`, in whole MiB.** It was fixed at 10 MiB, so a long session that had grown past it got `413 Request body too large` on every resend. The default stays 10, and the 413 now reports the configured limit in `max`. The body is buffered in memory, so a larger limit means a larger buffer per request. The value is a whole number of MiB written as digits only, from 1 to 128, because the body is buffered and decoded as one string. An env value that is not valid, such as `64MiB`, `6.4` or `256`, is ignored and the default applies; the same flag value, `--max-body-mb` with no value, or the flag given more than once, exits with an error naming MiB; `--max-body-mb=0` keeps the default. It is read from the flag and the env var only, not from `~/.dario/config.json`. dario#1924.
 
