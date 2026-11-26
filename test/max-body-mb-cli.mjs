@@ -5,24 +5,26 @@
 // test/max-body-mb.mjs covers the parsing, the refusal of bad values by the
 // real CLI, and the live 413 / success through startProxy. None of that notices
 // a CLI that validates a good value and then stops passing it on. Here the real
-// `dist/cli.js proxy` runs as a child, three times, and each one gets the same
-// 11 MiB body:
-//   - no flag, no env: 413 naming 10MB;
-//   - --max-body-mb=16: the stubbed inference answer;
-//   - DARIO_MAX_BODY_MB=16: the stubbed inference answer.
+// `dist/cli.js proxy` runs as a child, three times:
+//   - no flag, no env: an 11 MiB body gets 413 naming 10MB;
+//   - --max-body-mb=16: an 11 MiB body gets the stubbed inference answer and a
+//     17 MiB body gets 413 naming 16MB, with no inference call for it;
+//   - DARIO_MAX_BODY_MB=16: the same as the flag.
 //
-// Hermetic: HOME is a mkdtemp'd dir with one Claude account; upstream, log,
-// ledger and refresh-lock settings are cleared and the ledger is off
-// (DARIO_LEDGER=0). The child preloads test/helpers/fetch-stub-preload.mjs
-// through NODE_OPTIONS, which stubs the network, so DARIO_NO_BUN=1 keeps the CLI
-// on Node (a Bun relaunch would drop the preload). Only the children this test
-// spawned are killed.
+// Hermetic: the child's environment is built from a short allowlist of OS
+// variables plus this test's own settings, so nothing the operator exported
+// reaches it. HOME is a mkdtemp'd dir with one Claude account and the ledger is
+// off (DARIO_LEDGER=0). The child preloads test/helpers/fetch-stub-preload.cjs
+// through NODE_OPTIONS, which stubs the network; DARIO_NO_BUN=1 keeps the CLI on
+// Node, because a Bun relaunch would drop the preload. A child counts as ready
+// when it prints its own post-bind banner, and each child is stopped and its
+// output read after it closed, so every case reads the same complete stderr.
 
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
@@ -31,11 +33,16 @@ const check = (name, cond, detail) => {
   else { console.log(`  FAIL ${name}${detail ? ' :: ' + detail : ''}`); fail++; }
 };
 const header = (n) => console.log(`\n=== ${n} ===`);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'dist', 'cli.js');
-const PRELOAD = pathToFileURL(join(here, 'helpers', 'fetch-stub-preload.mjs')).href;
+const PRELOAD = join(here, 'helpers', 'fetch-stub-preload.cjs').replace(/\\/g, '/');
 const MIB = 1024 * 1024;
+const READY_DEADLINE_MS = 30_000;
+const REQUEST_DEADLINE_MS = 60_000;
+const CLOSE_DEADLINE_MS = 10_000;
+// The banner the proxy prints from its listen callback, so it appears only once
+// this child itself has bound its port.
+const READY_LINE = 'Your Claude subscription is now an API.';
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-max-body-cli-'));
 await mkdir(join(tmpHome, '.dario', 'accounts'), { recursive: true });
@@ -52,80 +59,107 @@ await writeFile(
   }),
 );
 
-const env = { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome };
-for (const k of [
-  'ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_MAX_BODY_MB', 'DARIO_CREDITS_API_KEY',
-  'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN', 'DARIO_LOG_FILE', 'DARIO_LOG_BODIES', 'DARIO_LEDGER_PATH',
-]) delete env[k];
-env.DARIO_LEDGER = '0';
-env.DARIO_NO_BUN = '1';
-env.NODE_OPTIONS = `--import ${PRELOAD}`;
+// The OS variables a Node child needs, matched case-insensitively (Windows
+// spells PATH as Path). Nothing else is inherited.
+const OS_VARS = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR']);
+const baseEnv = {};
+for (const [k, v] of Object.entries(process.env)) if (OS_VARS.has(k.toUpperCase())) baseEnv[k] = v;
+Object.assign(baseEnv, {
+  HOME: tmpHome,
+  USERPROFILE: tmpHome,
+  DARIO_LEDGER: '0',
+  DARIO_NO_BUN: '1',
+  NODE_OPTIONS: `--require "${PRELOAD}"`,
+});
 
-const children = [];
-/** Start `dario proxy` on a free port; resolves once /health answers or the child dies. */
+const children = new Set();
+
+/** Start the CLI on a free port; ready once it prints its own banner. Retries once on a port collision. */
 async function startCli(extraArgs, extraEnv = {}) {
-  const port = await freePort();
-  const child = spawn(process.execPath, [CLI, 'proxy', `--port=${port}`, '--no-live-capture', ...extraArgs], {
-    env: { ...env, ...extraEnv },
-    cwd: tmpHome,
-  });
-  children.push(child);
-  const run = { port, child, out: '', err: '', exited: false };
-  child.stdout.on('data', (d) => { run.out += d; });
-  child.stderr.on('data', (d) => { run.err += d; });
-  child.on('exit', () => { run.exited = true; });
-  for (let i = 0; i < 150 && !run.exited; i++) {
-    try { const r = await fetch(`http://127.0.0.1:${port}/health`); await r.text(); run.ready = true; break; } catch { await sleep(100); }
+  let last = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const port = await freePort();
+    const child = spawn(process.execPath, [CLI, 'proxy', '--host=127.0.0.1', `--port=${port}`, '--no-live-capture', ...extraArgs], {
+      env: { ...baseEnv, ...extraEnv },
+      cwd: tmpHome,
+    });
+    children.add(child);
+    const run = { port, child, out: '', err: '', ready: false, exited: false, spawnError: null, closed: null };
+    run.closed = new Promise((resolve) => child.on('close', () => { run.exited = true; resolve(); }));
+    child.on('error', (e) => { run.spawnError = e; run.exited = true; });
+    child.stdout.on('data', (d) => { run.out += d; });
+    child.stderr.on('data', (d) => { run.err += d; });
+    const deadline = Date.now() + READY_DEADLINE_MS;
+    while (!run.exited && Date.now() < deadline) {
+      if (run.out.includes(READY_LINE)) { run.ready = true; break; }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (run.ready) return run;
+    await stopCli(run);
+    last = run;
+    if (!/already in use/.test(run.err + run.out)) break;
   }
-  return run;
+  return last;
 }
 
-const post = (port, bytes) => fetch(`http://127.0.0.1:${port}/v1/messages`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ model: 'claude-opus-5', max_tokens: 16, messages: [{ role: 'user', content: 'x'.repeat(bytes) }] }),
-});
+/** Stop a child and wait for it to close, so its output is complete. Only children this test spawned. */
+async function stopCli(run) {
+  if (!run.exited) run.child.kill();
+  await Promise.race([run.closed, new Promise((r) => setTimeout(r, CLOSE_DEADLINE_MS))]);
+  if (!run.exited) { run.child.kill('SIGKILL'); await Promise.race([run.closed, new Promise((r) => setTimeout(r, CLOSE_DEADLINE_MS))]); }
+  children.delete(run.child);
+}
+
+/** POST a body of about `bytes` bytes; the request and the body read share one deadline. */
+async function post(port, bytes) {
+  const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-5', max_tokens: 16, messages: [{ role: 'user', content: 'x'.repeat(bytes) }] }),
+    signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+  });
+  const text = await res.text();
+  return { status: res.status, text };
+}
 const readJson = (text) => { try { return JSON.parse(text); } catch { return null; } };
-const messageCalls = (run) => [...run.err.matchAll(/\[fetch-stub\] messages bytes=(\d+)/g)].map((m) => Number(m[1]));
-const catalogCalls = (run) => [...run.err.matchAll(/\[fetch-stub\] models/g)].length;
-const refusedCalls = (run) => [...run.err.matchAll(/\[fetch-stub\] refused (\S+)/g)].map((m) => m[1]);
+const stubLines = (run, kind) => [...run.err.matchAll(new RegExp(`\\[fetch-stub\\] ${kind}(?: (.*))?$`, 'gm'))].map((m) => m[1] ?? '');
+
+/** The checks every case shares, on the child's complete stderr after it closed. */
+function checkStub(run, inferenceCalls) {
+  check('the startup catalog fetch went to the stub', stubLines(run, 'models').length >= 1, run.err.slice(0, 300));
+  check('nothing was refused', stubLines(run, 'refused').length === 0, stubLines(run, 'refused').join(' | '));
+  const calls = stubLines(run, 'messages').map((l) => Number(l.replace('bytes=', '')));
+  check(`the stub saw ${inferenceCalls} inference call(s)`, calls.length === inferenceCalls, JSON.stringify(calls));
+  return calls;
+}
+
+/** One CLI run: the 11 MiB body, then (for a raised limit) a 17 MiB one. */
+async function runCase(label, extraArgs, extraEnv, raised) {
+  header(label);
+  const run = await startCli(extraArgs, extraEnv);
+  check('the CLI printed its banner', run.ready === true, `${run.spawnError ?? ''} ${run.err.slice(0, 300)} ${run.out.slice(0, 300)}`);
+  if (!run.ready) return;
+  const mid = await post(run.port, 11 * MIB);
+  if (raised) {
+    check('11 MiB: 200', mid.status === 200, `${mid.status} ${mid.text.slice(0, 160)}`);
+    check('11 MiB: the stubbed inference answer comes back', mid.text.includes('served through the CLI'), mid.text.slice(0, 160));
+    const big = await post(run.port, 17 * MIB);
+    check('17 MiB: 413', big.status === 413, `${big.status} ${big.text.slice(0, 120)}`);
+    check('17 MiB: the body names 16MB', readJson(big.text)?.max === '16MB', big.text.slice(0, 120));
+  } else {
+    check('11 MiB: 413', mid.status === 413, `${mid.status} ${mid.text.slice(0, 120)}`);
+    check('11 MiB: the body names 10MB', readJson(mid.text)?.max === '10MB', mid.text.slice(0, 120));
+  }
+  await stopCli(run);
+  check('the child closed', run.exited === true);
+  const calls = checkStub(run, raised ? 1 : 0);
+  if (raised) check('the one inference call carried the 11 MiB body', calls[0] > 10 * MIB && calls[0] < 16 * MIB, JSON.stringify(calls));
+}
 
 try {
-  header('no flag, no env: the default limit refuses 11 MiB');
-  {
-    const run = await startCli([]);
-    check('the CLI came up', run.ready === true, run.err.slice(0, 300));
-    const res = await post(run.port, 11 * MIB);
-    const text = await res.text();
-    check('413', res.status === 413, `${res.status} ${text.slice(0, 120)}`);
-    check('the body says 10MB', readJson(text)?.max === '10MB', text.slice(0, 120));
-    check('nothing was sent upstream', messageCalls(run).length === 0);
-    check('the preload was active: the startup catalog fetch went to the stub, and nothing was refused', catalogCalls(run) >= 1 && refusedCalls(run).length === 0, `${catalogCalls(run)} ${refusedCalls(run).join(',')}`);
-  }
-
-  header('--max-body-mb=16: the CLI passes it through');
-  {
-    const run = await startCli(['--max-body-mb=16']);
-    check('the CLI came up', run.ready === true, run.err.slice(0, 300));
-    const res = await post(run.port, 11 * MIB);
-    const text = await res.text();
-    check('200', res.status === 200, `${res.status} ${text.slice(0, 160)}`);
-    check('the stubbed inference answer comes back', text.includes('served through the CLI'), text.slice(0, 160));
-    check('the inference call carried the big body', messageCalls(run).length === 1 && messageCalls(run)[0] > 10 * MIB, JSON.stringify(messageCalls(run)));
-    check('nothing else was requested', refusedCalls(run).length === 0, refusedCalls(run).join(','));
-  }
-
-  header('DARIO_MAX_BODY_MB=16: the CLI passes it through');
-  {
-    const run = await startCli([], { DARIO_MAX_BODY_MB: '16' });
-    check('the CLI came up', run.ready === true, run.err.slice(0, 300));
-    const res = await post(run.port, 11 * MIB);
-    const text = await res.text();
-    check('200', res.status === 200, `${res.status} ${text.slice(0, 160)}`);
-    check('the stubbed inference answer comes back', text.includes('served through the CLI'), text.slice(0, 160));
-    check('the inference call carried the big body', messageCalls(run).length === 1 && messageCalls(run)[0] > 10 * MIB, JSON.stringify(messageCalls(run)));
-    check('nothing else was requested', refusedCalls(run).length === 0, refusedCalls(run).join(','));
-  }
+  await runCase('no flag, no env: the default limit', [], {}, false);
+  await runCase('--max-body-mb=16: the CLI passes it through', ['--max-body-mb=16'], {}, true);
+  await runCase('DARIO_MAX_BODY_MB=16: the CLI passes it through', [], { DARIO_MAX_BODY_MB: '16' }, true);
 } finally {
   for (const c of children) { try { c.kill(); } catch { /* already gone */ } }
 }
