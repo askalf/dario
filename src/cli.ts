@@ -2495,10 +2495,10 @@ export const FULL_HELP = `
                              naming the limit. The body is buffered in
                              memory, so a larger limit means a larger
                              buffer per request. N is digits only, 1 to
-                             8589934591; 0 keeps the default; anything
-                             else exits with an error. An invalid
-                             DARIO_MAX_BODY_MB is ignored (default).
-                             Env: DARIO_MAX_BODY_MB.
+                             256; 0 keeps the default; anything else,
+                             or no value, exits with an error. An
+                             invalid DARIO_MAX_BODY_MB is ignored
+                             (default). Env: DARIO_MAX_BODY_MB.
     --max-concurrent=N       Max in-flight requests across the WHOLE proxy,
                              not per seat (default: 10; a pool defaults to
                              10 per seat). Past it, requests wait in dario.

@@ -138,7 +138,11 @@ const KEY = 'sk-ant-test-credits-rung';
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-credits-rung-'));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
-delete process.env.DARIO_CREDITS_API_KEY;
+// The seat path needs no inherited upstream key, and no refresh-lock service
+// may be asked for newer credentials at startup.
+for (const k of ['DARIO_CREDITS_API_KEY', 'ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN']) {
+  delete process.env[k];
+}
 
 await mkdir(join(tmpHome, '.dario', 'accounts'), { recursive: true });
 await writeFile(
@@ -153,6 +157,24 @@ await writeFile(
     accountUuid: 'uuid-1',
   }),
 );
+
+// The seat makes startProxy fetch the model catalog through global fetch, not
+// through fetchImpl. Stub it: /v1/models is answered, loopback goes to the real
+// fetch (the test's own requests to its proxies), anything else is recorded and
+// refused.
+const realFetch = globalThis.fetch;
+const refusedUrls = [];
+globalThis.fetch = async (url, init) => {
+  const target = String(url instanceof Request ? url.url : url);
+  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])[:/]/.test(target)) return realFetch(url, init);
+  if (target.includes('/v1/models')) {
+    return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5', type: 'model' }, { id: 'claude-opus-5', type: 'model' }] }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+  }
+  refusedUrls.push(target);
+  throw new Error(`unexpected network call in test: ${target}`);
+};
 
 const { startProxy } = await import('../dist/proxy.js');
 
@@ -369,6 +391,10 @@ header('a long-context rejection on the key: the retry does not bring the stripp
   check('the key was asked twice: the rejection, then the retry', keyCalls.length === 2, JSON.stringify(recoverCalls.map((c) => ({ key: c.apiKey === KEY, beta: c.beta }))));
   check('neither key request carries an anthropic-beta header', keyCalls.every((c) => c.beta === null), JSON.stringify(keyCalls.map((c) => c.beta)));
 }
+
+header('nothing reached the network but the stubs');
+check('no unexpected non-loopback URL was requested', refusedUrls.length === 0, refusedUrls.join(','));
+globalThis.fetch = realFetch;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

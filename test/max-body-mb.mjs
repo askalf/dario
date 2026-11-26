@@ -31,7 +31,7 @@ const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const here = dirname(fileURLToPath(import.meta.url));
 
-for (const k of ['ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_MAX_BODY_MB', 'DARIO_CREDITS_API_KEY']) {
+for (const k of ['ANTHROPIC_UPSTREAM_API_KEY', 'ANTHROPIC_API_KEY', 'DARIO_API_KEY', 'DARIO_MAX_BODY_MB', 'DARIO_CREDITS_API_KEY', 'DARIO_REFRESH_LOCK_URL', 'DARIO_REFRESH_LOCK_TOKEN']) {
   delete process.env[k];
 }
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-max-body-'));
@@ -44,7 +44,7 @@ const { resolveMaxBodyMb, parseMaxBodyMb, resolveMaxBodyBytes, DEFAULT_MAX_BODY_
 header('parsing: digits only, whole MiB');
 {
   check('64 -> 64', parseMaxBodyMb('64') === 64);
-  check('surrounding whitespace is allowed', parseMaxBodyMb(' 64 ') === 64);
+  check('surrounding whitespace is refused', parseMaxBodyMb(' 64 ') === undefined && parseMaxBodyMb('64 ') === undefined && parseMaxBodyMb(' 64') === undefined);
   check('64MiB is refused (parseInt would read 64)', parseMaxBodyMb('64MiB') === undefined);
   check('64oops is refused', parseMaxBodyMb('64oops') === undefined);
   check('6.4 is refused', parseMaxBodyMb('6.4') === undefined);
@@ -53,9 +53,10 @@ header('parsing: digits only, whole MiB');
   check('+5 is refused', parseMaxBodyMb('+5') === undefined);
   check('empty is refused', parseMaxBodyMb('') === undefined);
   check('0 is not a limit', parseMaxBodyMb('0') === undefined);
-  check('the ceiling is accepted', parseMaxBodyMb(String(MAX_BODY_MB_CEILING)) === MAX_BODY_MB_CEILING);
-  check('one past the ceiling is refused', parseMaxBodyMb(String(MAX_BODY_MB_CEILING + 1)) === undefined);
-  check('a 30-digit value is refused', parseMaxBodyMb('9'.repeat(30)) === undefined);
+  check('a leading zero is still digits', parseMaxBodyMb('064') === 64);
+  check('the ceiling is 256 and is accepted', MAX_BODY_MB_CEILING === 256 && parseMaxBodyMb('256') === 256);
+  check('one past the ceiling is refused', parseMaxBodyMb('257') === undefined);
+  check('a 400-digit value is refused', parseMaxBodyMb('9'.repeat(400)) === undefined);
 }
 
 header('resolution: argv and env');
@@ -65,19 +66,27 @@ header('resolution: argv and env');
   check('flag 32 -> 32', resolveMaxBodyMb(['proxy', '--max-body-mb=32'], undefined) === 32);
   check('the flag wins over the env var', resolveMaxBodyMb(['--max-body-mb=32'], '64') === 32);
   check('an explicit flag 0 keeps the default even with a valid env', resolveMaxBodyMb(['--max-body-mb=0'], '64') === undefined);
-  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '0', '', '99999999999999']) {
+  check('a flag with whitespace around 0 is not the zero sentinel', (() => { try { resolveMaxBodyMb(['--max-body-mb= 0'], '64'); return false; } catch { return true; } })());
+  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '0', '', ' 64', '64 ', '257', '99999999999999']) {
     check(`env ${JSON.stringify(bad)} is ignored (default)`, resolveMaxBodyMb([], bad) === undefined);
   }
-  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '', '99999999999999']) {
+  for (const bad of ['64MiB', '64oops', '6.4', '-1', 'abc', '', ' 64', '64 ', '257', '99999999999999']) {
     let msg = null;
     try { resolveMaxBodyMb([`--max-body-mb=${bad}`], '64'); } catch (e) { msg = e.message; }
     check(`flag ${JSON.stringify(bad)} throws and names MiB`, msg !== null && msg.includes('MiB') && !/\bms\b/.test(msg), String(msg));
   }
 }
 
+header('a bare --max-body-mb is a missing value');
+{
+  let msg = null;
+  try { resolveMaxBodyMb(['proxy', '--max-body-mb'], '64'); } catch (e) { msg = e.message; }
+  check('a bare flag throws the MiB diagnostic even with a valid env', msg !== null && msg.includes('MiB') && /Invalid --max-body-mb value/.test(msg), String(msg));
+}
+
 header('the CLI refuses a bad flag value before it binds a port');
 {
-  for (const bad of ['64MiB', '64oops', '6.4']) {
+  for (const bad of ['64MiB', '64oops', '6.4', ' 64', '257']) {
     const r = spawnSync(process.execPath, [join(here, '..', 'dist', 'cli.js'), 'proxy', `--port=${await freePort()}`, `--max-body-mb=${bad}`], {
       env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
       encoding: 'utf8',
@@ -86,9 +95,16 @@ header('the CLI refuses a bad flag value before it binds a port');
     check(`--max-body-mb=${bad} exits 1`, r.status === 1, `status ${r.status}`);
     check('...with a MiB error on stderr', /Invalid --max-body-mb value/.test(r.stderr) && r.stderr.includes('MiB'), r.stderr.slice(0, 200));
   }
+  const bare = spawnSync(process.execPath, [join(here, '..', 'dist', 'cli.js'), 'proxy', `--port=${await freePort()}`, '--max-body-mb'], {
+    env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome, DARIO_MAX_BODY_MB: '64' },
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  check('a bare --max-body-mb exits 1', bare.status === 1, `status ${bare.status}`);
+  check('...with a MiB error on stderr', /Invalid --max-body-mb value/.test(bare.stderr) && bare.stderr.includes('MiB'), bare.stderr.slice(0, 200));
 }
 
-header('the byte limit is always finite');
+header('the byte limit stays within the ceiling');
 {
   check('the default is 10 MiB', DEFAULT_MAX_BODY_MB === 10 && resolveMaxBodyBytes(undefined) === 10 * MIB);
   check('a set value is taken in MiB', resolveMaxBodyBytes(64) === 64 * MIB);
@@ -97,8 +113,9 @@ header('the byte limit is always finite');
   check('NaN keeps the default', resolveMaxBodyBytes(Number.NaN) === 10 * MIB);
   check('Infinity keeps the default', resolveMaxBodyBytes(Infinity) === 10 * MIB);
   check('Number.MAX_VALUE keeps the default, not an infinite limit', resolveMaxBodyBytes(Number.MAX_VALUE) === 10 * MIB);
-  check('the ceiling is a finite byte count', Number.isSafeInteger(resolveMaxBodyBytes(MAX_BODY_MB_CEILING)) && resolveMaxBodyBytes(MAX_BODY_MB_CEILING) === MAX_BODY_MB_CEILING * MIB);
+  check('the ceiling itself is taken', resolveMaxBodyBytes(MAX_BODY_MB_CEILING) === 256 * MIB);
   check('one past the ceiling keeps the default', resolveMaxBodyBytes(MAX_BODY_MB_CEILING + 1) === 10 * MIB);
+  check('1024 keeps the default', resolveMaxBodyBytes(1024) === 10 * MIB);
 }
 
 // The account makes startProxy fetch the model catalog, so the stub goes in
