@@ -20,15 +20,18 @@
 // go to 127.0.0.1 through node:http with a plain agent, so no proxy setting in
 // the parent's environment applies to them.
 //
-// A child counts as ready when it prints its own post-bind banner. Each case
-// stops its child in an awaited finally, and reads the child's stderr only after
-// the child's `close` event. If the child has not closed within 10 s of SIGTERM
-// and again within 10 s of SIGKILL, the case fails explicitly, its stderr is not
-// inspected, and the child stays tracked so the final cleanup kills it again. A
-// request that fails or runs past its 60 s deadline fails the case, and the child
-// is still stopped and closed before its stderr is read.
+// A child counts as ready when it prints its own post-bind banner. Only the
+// child's `close` event marks it closed. Each case stops its child in an awaited
+// finally, and nothing reads the child's stderr (no stub count, no diagnostic, no
+// retry decision) before that event. A child whose spawn failed is waited on for
+// `close` without signals; a running one gets SIGTERM, then SIGKILL, each followed
+// by a 10 s wait. If close never arrives, the case fails with a fixed message, the
+// output stays unread, and the child stays tracked so the final cleanup kills it
+// again. A request that fails or runs past its 60 s deadline fails the case, and
+// the child is still stopped and closed before its stderr is read. The temp home
+// is removed in the final cleanup.
 
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { Agent, request } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -86,7 +89,7 @@ Object.assign(baseEnv, {
 const children = new Set();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Resolves true once `run.closed` is set, false after `ms`. */
+/** Resolves true once the close event has set `run.closed`, false after `ms`. */
 async function waitClosed(run, ms) {
   const end = Date.now() + ms;
   while (!run.closed && Date.now() < end) await sleep(50);
@@ -104,7 +107,7 @@ async function startCli(extraArgs, extraEnv = {}) {
     });
     children.add(child);
     // `closed` is set only by the close event; `died` also covers a spawn error.
-    const run = { port, child, out: '', err: '', ready: false, died: false, closed: false, spawnError: null, stopped: false };
+    const run = { port, child, out: '', err: '', ready: false, died: false, closed: false, spawnError: null };
     child.on('close', () => { run.closed = true; run.died = true; });
     child.on('error', (e) => { run.spawnError = e; run.died = true; });
     child.stdout.on('data', (d) => { run.out += d; });
@@ -115,26 +118,30 @@ async function startCli(extraArgs, extraEnv = {}) {
       await sleep(50);
     }
     if (run.ready) return run;
-    run.stopped = await stopCli(run);
     last = run;
-    if (!run.stopped || !/already in use/.test(run.err + run.out)) break;
+    // The output is read, for the retry decision, only after close.
+    if (!(await stopCli(run)) || !/already in use/.test(run.err + run.out)) break;
   }
   return last;
 }
 
 /**
  * Stop a child and wait for its close event. True once it closed (and only then
- * is it dropped from `children`); false if SIGTERM and then SIGKILL each waited
- * out CLOSE_DEADLINE_MS, in which case the child stays tracked. Only children
- * this test spawned.
+ * is it dropped from `children`); false if close never came, in which case the
+ * child stays tracked. A child whose spawn failed (no pid) is waited on without
+ * signals; a running one gets SIGTERM, then SIGKILL, each waited out for
+ * CLOSE_DEADLINE_MS. Only children this test spawned.
  */
 async function stopCli(run) {
-  if (run.child.pid === undefined) run.closed = true; // never started: no close event will come
   if (!run.closed) {
-    run.child.kill();
-    if (!(await waitClosed(run, CLOSE_DEADLINE_MS))) {
-      run.child.kill('SIGKILL');
+    if (run.child.pid === undefined) {
       await waitClosed(run, CLOSE_DEADLINE_MS);
+    } else {
+      run.child.kill();
+      if (!(await waitClosed(run, CLOSE_DEADLINE_MS))) {
+        run.child.kill('SIGKILL');
+        await waitClosed(run, CLOSE_DEADLINE_MS);
+      }
     }
   }
   if (run.closed) children.delete(run.child);
@@ -172,6 +179,10 @@ function post(port, bytes) {
 const readJson = (text) => { try { return JSON.parse(text); } catch { return null; } };
 const stubLines = (run, kind) => [...run.err.matchAll(new RegExp(`\\[fetch-stub\\] ${kind}(?: (.*))?$`, 'gm'))].map((m) => m[1] ?? '');
 
+const NOT_CLOSED = 'no close event: output not read, child stays tracked';
+/** What to print when a child never reached its banner; the output is read only after close. */
+const startupDetail = (run) => (run.closed ? `${run.spawnError ?? ''} ${run.err.slice(0, 300)} ${run.out.slice(0, 300)}` : NOT_CLOSED);
+
 /** The checks every case shares, on the child's complete stderr after it closed. */
 function checkStub(run, inferenceCalls) {
   check('the startup catalog fetch went to the stub', stubLines(run, 'models').length >= 1, run.err.slice(0, 300));
@@ -185,9 +196,13 @@ function checkStub(run, inferenceCalls) {
 async function runCase(label, extraArgs, extraEnv, raised) {
   header(label);
   const run = await startCli(extraArgs, extraEnv);
-  check('the CLI printed its banner', run.ready === true, `${run.spawnError ?? ''} ${run.err.slice(0, 300)} ${run.out.slice(0, 300)}`);
+  // A child that is ready is still running here, so its output is not read; one
+  // that never printed the banner was stopped by startCli, and its output is read
+  // only if it closed.
+  check('the CLI printed its banner', run.ready === true, run.ready ? undefined : startupDetail(run));
   if (!run.ready) {
-    check('the child that did not start closed', run.stopped === true, 'no close event: stderr not inspected, child stays tracked');
+    check('the child that did not start closed', run.closed === true, NOT_CLOSED);
+    if (run.closed) checkStub(run, 0);
     return;
   }
   let stopped = false;
@@ -208,7 +223,7 @@ async function runCase(label, extraArgs, extraEnv, raised) {
   } finally {
     stopped = await stopCli(run);
   }
-  check('the child closed', stopped === true, 'no close event: stderr not inspected, child stays tracked');
+  check('the child closed', stopped === true, NOT_CLOSED);
   if (!stopped) return;
   const calls = checkStub(run, raised ? 1 : 0);
   if (raised) check('the one inference call carried the 11 MiB body', calls[0] > 10 * MIB && calls[0] < 16 * MIB, JSON.stringify(calls));
@@ -220,6 +235,8 @@ try {
   await runCase('DARIO_MAX_BODY_MB=16: the CLI passes it through', [], { DARIO_MAX_BODY_MB: '16' }, true);
 } finally {
   for (const c of children) { try { c.kill('SIGKILL'); } catch { /* already gone */ } }
+  // tmpHome is the mkdtemp directory this test made, never the OS temp dir itself.
+  await rm(tmpHome, { recursive: true, force: true }).catch(() => {});
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
