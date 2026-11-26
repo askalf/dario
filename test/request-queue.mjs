@@ -18,7 +18,7 @@ import {
   resolveMaxConcurrent,
   SLOT_WAIT_ANNOUNCE_MS,
 } from '../dist/request-queue.js';
-import { parsePositiveIntEnv, resolveMaxBodyMb } from '../dist/cli.js';
+import { parsePositiveIntEnv } from '../dist/cli.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -309,18 +309,6 @@ header('onSlotWait — a backlog that never drains announces once, not per admis
   q.release(); await waiters[2];     // queue now 0 → re-armed, but nothing else is waiting
   q.release();
   check('nothing extra fired on the drain itself', fired === 1);
-}
-
-header('resolveMaxBodyMb: DARIO_MAX_BODY_MB / --max-body-mb');
-{
-  check('nothing set: undefined, so the proxy default (10 MiB) applies', resolveMaxBodyMb(undefined, undefined) === undefined);
-  check('env 64 -> 64', resolveMaxBodyMb(undefined, '64') === 64);
-  check('flag 32 -> 32', resolveMaxBodyMb(32, undefined) === 32);
-  check('the flag wins over the env', resolveMaxBodyMb(32, '64') === 32);
-  check('env "abc" is ignored (default)', resolveMaxBodyMb(undefined, 'abc') === undefined);
-  check('env "-5" is ignored (default)', resolveMaxBodyMb(undefined, '-5') === undefined);
-  check('env "0" is ignored (default)', resolveMaxBodyMb(undefined, '0') === undefined);
-  check('flag 0 gives the default, even with a valid env', resolveMaxBodyMb(0, '64') === undefined);
 }
 
 // ─────────────────────────────────────────────────────────────

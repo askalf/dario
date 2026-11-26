@@ -64,6 +64,7 @@ import { listCodexAccountAliases, loadAllCodexAccounts, loadCodexAccount, startA
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
+import { resolveMaxBodyMb } from './body-limit.js';
 
 // `args` / `command` at module scope — command handlers below close over
 // `args` to read their own flags. Reading argv is harmless on import; only
@@ -539,10 +540,13 @@ async function proxy() {
   // --max-body-mb=N: the largest request body dario accepts, in whole MiB
   // (default 10). The body is buffered in memory, so a larger limit means a
   // larger buffer per request.
-  const maxBodyMb = resolveMaxBodyMb(
-    parsePositiveIntFlag('--max-body-mb='),
-    process.env['DARIO_MAX_BODY_MB'],
-  );
+  let maxBodyMb: number | undefined;
+  try {
+    maxBodyMb = resolveMaxBodyMb(args, process.env['DARIO_MAX_BODY_MB']);
+  } catch (err) {
+    console.error(`[dario] ${(err as Error).message}`);
+    process.exit(1);
+  }
   // --upstream-timeout=MS: how long dario waits for upstream (default 300000).
   // Until the response streams it caps the whole wait; once a 2xx streams it
   // is the longest gap allowed between two chunks, so a long answer that is
@@ -1329,18 +1333,6 @@ function parsePreserveTagsValue(value: string): Set<string> {
 export function resolveUpstreamTimeoutMs(flag: number | undefined, env: string | undefined): number | undefined {
   const ms = flag ?? parsePositiveIntEnv(env);
   return ms === 0 ? undefined : ms;
-}
-
-/**
- * --max-body-mb / DARIO_MAX_BODY_MB, in whole MiB. The flag wins over the env
- * var even when it is 0, and 0 then resolves to undefined so the proxy's
- * default applies. An env value that is not a positive integer is ignored, the
- * way every sibling env var treats one; a flag that is not a number exits in
- * parsePositiveIntFlag. Exported for tests.
- */
-export function resolveMaxBodyMb(flag: number | undefined, env: string | undefined): number | undefined {
-  const mb = flag ?? parsePositiveIntEnv(env);
-  return mb === 0 ? undefined : mb;
 }
 
 /**
@@ -2502,7 +2494,10 @@ export const FULL_HELP = `
                              MiB (default: 10). A larger body gets 413
                              naming the limit. The body is buffered in
                              memory, so a larger limit means a larger
-                             buffer per request. 0 keeps the default.
+                             buffer per request. N is digits only, 1 to
+                             8589934591; 0 keeps the default; anything
+                             else exits with an error. An invalid
+                             DARIO_MAX_BODY_MB is ignored (default).
                              Env: DARIO_MAX_BODY_MB.
     --max-concurrent=N       Max in-flight requests across the WHOLE proxy,
                              not per seat (default: 10; a pool defaults to
