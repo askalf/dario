@@ -44,9 +44,10 @@ export const ACCOUNT_KEY_CREDITS = '__credits__';
 const OAUTH_BETA = 'oauth-2025-04-20';
 
 /**
- * The Claude Code beta. With it Anthropic bills a request against the
- * plan-linked credits path and refuses a funded Console key, so a plain API
- * request must not carry it. Same value as `CLAUDE_CODE_BETA` in proxy.ts.
+ * The Claude Code beta. A request on a funded Console key that carries it is
+ * refused with 400 billing_required, and the same request without it is served
+ * (dario#1927), so a plain API request must not carry it. Same value as
+ * `CLAUDE_CODE_BETA` in proxy.ts.
  */
 const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
