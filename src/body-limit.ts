@@ -19,11 +19,11 @@ export const DEFAULT_MAX_BODY_MB = 10;
 export const MAX_BODY_MB_CEILING = 256;
 
 /**
- * The request body limit in bytes. A missing size, or one that is not a
- * positive number up to the ceiling, keeps the default.
+ * The request body limit in bytes. A missing size, or one that is not a whole
+ * number of MiB from 1 to the ceiling, keeps the default.
  */
 export function resolveMaxBodyBytes(maxBodyMb: number | undefined): number {
-  if (maxBodyMb !== undefined && maxBodyMb > 0 && maxBodyMb <= MAX_BODY_MB_CEILING) {
+  if (maxBodyMb !== undefined && Number.isInteger(maxBodyMb) && maxBodyMb >= 1 && maxBodyMb <= MAX_BODY_MB_CEILING) {
     return maxBodyMb * BYTES_PER_MIB;
   }
   return DEFAULT_MAX_BODY_MB * BYTES_PER_MIB;

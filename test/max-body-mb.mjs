@@ -116,6 +116,7 @@ header('the byte limit stays within the ceiling');
   check('the ceiling itself is taken', resolveMaxBodyBytes(MAX_BODY_MB_CEILING) === 256 * MIB);
   check('one past the ceiling keeps the default', resolveMaxBodyBytes(MAX_BODY_MB_CEILING + 1) === 10 * MIB);
   check('1024 keeps the default', resolveMaxBodyBytes(1024) === 10 * MIB);
+  check('a fraction of a MiB keeps the default', resolveMaxBodyBytes(2.5) === 10 * MIB);
 }
 
 // The account makes startProxy fetch the model catalog, so the stub goes in
