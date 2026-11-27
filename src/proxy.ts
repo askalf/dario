@@ -66,6 +66,7 @@ import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { OncePerKey, describeThinkingDrops, historyCarriesThinking, seatMoveNote, thinkingDropLogFields, thinkingDropsFrom, thinkingDropsKey, type ThinkingDrops } from './thinking-binding.js';
 import { ACCOUNT_KEY_CREDITS, creditsBeforePlain, creditsEntries, creditsFallbackMarker, creditsHeaders, describeCreditsRung, pickCreditsTarget, withoutCreditsEntries } from './credits-rung.js';
+import { DEFAULT_MAX_BODY_MB, resolveMaxBodyBytes } from './body-limit.js';
 import { parseFamilyFallback, familyFallbackModel, describeFamilyFallback, type FamilyFallbackMap } from './family-fallback.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
 import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
@@ -83,7 +84,7 @@ import {
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
-const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
+export { DEFAULT_MAX_BODY_MB, resolveMaxBodyBytes };
 // Until the response streams: the whole wait. While a 2xx streams: the longest
 // gap between two chunks (src/upstream-deadline.ts). 5 min, as in the Anthropic SDK.
 const UPSTREAM_TIMEOUT_MS = 300_000;
@@ -1306,6 +1307,12 @@ interface ProxyOptions {
    * is accepted while the wait runs. dario#1370.
    */
   shutdownGraceMs?: number;
+  /**
+   * Largest request body in MiB. Past it the proxy answers 413 and names the
+   * limit. The body is buffered in memory, so a larger limit means a larger
+   * buffer per request. Default 10. `--max-body-mb` / `DARIO_MAX_BODY_MB`.
+   */
+  maxBodyMb?: number;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -1842,6 +1849,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
   const verbose = opts.verbose ?? false;
+  const maxBodyBytes = resolveMaxBodyBytes(opts.maxBodyMb);
   const passthrough = opts.passthrough ?? false;
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
@@ -4546,10 +4554,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         for await (const chunk of req) {
           const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
           totalBytes += buf.length;
-          if (totalBytes > MAX_BODY_BYTES) {
+          if (totalBytes > maxBodyBytes) {
             clearTimeout(bodyTimeout);
             res.writeHead(413, JSON_HEADERS);
-            res.end(JSON.stringify({ error: 'Request body too large', max: `${MAX_BODY_BYTES / 1024 / 1024}MB` }));
+            res.end(JSON.stringify({ error: 'Request body too large', max: `${maxBodyBytes / 1024 / 1024}MB` }));
             return;
           }
           chunks.push(buf);
@@ -6370,6 +6378,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         Object.assign(headers, creditsHeaders(creditsApiKey, clientBeta, clientAnthropicVersion));
         return true;
       };
+      // The beta header a recovery retry sends. The credits rung's request is a
+      // plain API request that may carry no beta header, so an empty result
+      // there removes the header instead of sending it empty.
+      const setRetryBeta = (value: string): void => {
+        if (creditsRung && value === '') delete headers['anthropic-beta'];
+        else headers['anthropic-beta'] = value;
+      };
       dispatchLoop: while (true) {
         // Reorder outbound headers to match CC's captured header sequence
         // when the live template recorded one. No-op on bundled-only installs.
@@ -6494,12 +6509,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // branch had already stripped — costing a wasted round trip, and with a
           // third rejection stacked on, exhausting the pass bound and forwarding a
           // spurious 400. Caught in review on #855; regression-tested.
-          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const activeBeta = headers['anthropic-beta'] ?? (creditsRung ? '' : beta);
           const reducedBeta = activeBeta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
           // Mutate the request headers in place and re-dispatch: the loop head
           // re-derives outboundHeaders from `headers` on every pass, so the
           // reduced beta set sticks and the response re-enters this chain.
-          headers['anthropic-beta'] = reducedBeta;
+          setRetryBeta(reducedBeta);
           recoveryPasses++;
           peekedBody = null;
           continue dispatchLoop;
@@ -6684,12 +6699,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // branch had already stripped — costing a wasted round trip, and with a
           // third rejection stacked on, exhausting the pass bound and forwarding a
           // spurious 400. Caught in review on #855; regression-tested.
-          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const activeBeta = headers['anthropic-beta'] ?? (creditsRung ? '' : beta);
           const reducedBeta = activeBeta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
           // Mutate the request headers in place and re-dispatch: the loop head
           // re-derives outboundHeaders from `headers` on every pass, so the
           // reduced beta set sticks and the response re-enters this chain.
-          headers['anthropic-beta'] = reducedBeta;
+          setRetryBeta(reducedBeta);
           recoveryPasses++;
           peekedBody = null;
           continue dispatchLoop;

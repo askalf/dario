@@ -13,8 +13,9 @@
  * seat is drained or cooling and no subscription rung can serve, the request
  * goes to api.anthropic.com on the Messages path as a plain API request: the
  * client's own body with the model swapped, `x-api-key`, no Claude Code
- * template and no OAuth beta. Both wire shapes work, because the Claude path
- * already translates OpenAI-shape requests and responses. The response says
+ * template and neither the OAuth beta nor the Claude Code beta. Both wire
+ * shapes work, because the Claude path already translates OpenAI-shape
+ * requests and responses. The response says
  * `x-dario-pool-fallback: credits:<model>`; the rolling window, `/metrics`
  * and the dashboard file the request under its own billing bucket, `credits`,
  * next to extra usage and API key; the persistent ledger counts it in its
@@ -41,6 +42,14 @@ export const ACCOUNT_KEY_CREDITS = '__credits__';
 
 /** The OAuth-enablement beta a plain API request must not carry. */
 const OAUTH_BETA = 'oauth-2025-04-20';
+
+/**
+ * The Claude Code beta. A request on a funded Console key that carries it is
+ * refused with 400 billing_required, and the same request without it is served
+ * (dario#1927), so a plain API request must not carry it. Same value as
+ * `CLAUDE_CODE_BETA` in proxy.ts.
+ */
+const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
 /** The value of `x-dario-pool-fallback` on a response the rung served. */
 export function creditsFallbackMarker(model: string): string {
@@ -111,7 +120,8 @@ export function pickCreditsTarget(
 /**
  * Outbound headers for a credits request: the headers a plain API client
  * sends and nothing of Claude Code's identity. The client's own betas go
- * through minus the OAuth flag, which an API key request must not carry.
+ * through minus the OAuth flag and the Claude Code beta, which an API key
+ * request must not carry.
  */
 export function creditsHeaders(
   key: string,
@@ -127,7 +137,7 @@ export function creditsHeaders(
   const beta = (clientBeta ?? '')
     .split(',')
     .map((b) => b.trim())
-    .filter((b) => b.length > 0 && b !== OAUTH_BETA)
+    .filter((b) => b.length > 0 && b !== OAUTH_BETA && b !== CLAUDE_CODE_BETA)
     .join(',');
   if (beta) headers['anthropic-beta'] = beta;
   return headers;
