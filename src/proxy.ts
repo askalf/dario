@@ -5166,6 +5166,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             };
             codexClaim = await claimCodexAccount(codexResponseIssuer ?? undefined, codexPick);
             let stored = codexClaim?.account ?? await soonestCodexSeat();
+            let loadedSeat: { claim: CodexSeatClaim; creds: CodexAccountCredentials; models: readonly string[] } | null = null;
             while (stored) {
               const catalogWasUnread = peekCodexModelSlugs(stored.alias) === null;
               try {
@@ -5174,7 +5175,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               } catch (err) {
                 if (!(err instanceof CodexCredentialsUnavailableError)) {
                   releaseHeldCodexSeat();
+                  loadedSeat?.claim.release();
                   throw err;
+                }
+                if (loadedSeat) {
+                  releaseHeldCodexSeat();
+                  rebindCodexSticky(codexStickyKey, stored.alias, loadedSeat.claim.account.alias);
+                  codexClaim = loadedSeat.claim;
+                  codexCreds = loadedSeat.creds;
+                  codexModels = loadedSeat.models;
+                  break;
                 }
                 codexUnavailable = err;
                 // Cached slugs only — never an upstream call with a credential
@@ -5193,11 +5203,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 repick?.release();
                 break;
               }
-              releaseHeldCodexSeat();
+              loadedSeat?.claim.release();
+              loadedSeat = { claim: codexClaim, creds: codexCreds, models: codexModels };
               codexClaim = repick;
               stored = repick.account;
               codexCreds = null;
             }
+            if (loadedSeat && loadedSeat.claim !== codexClaim) loadedSeat.claim.release();
           }
           // dario#1260 — an effort suffix on a CODEX model (`gpt-5.6-terra:high`).
           // The two strip sites further up deliberately leave OpenAI-shaped names
