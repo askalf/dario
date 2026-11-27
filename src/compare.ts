@@ -33,7 +33,7 @@ import { join } from 'node:path';
 import type { ServerResponse } from 'node:http';
 
 import { forwardToCodex, getCodexModelSlugs, isCodexModel } from './codex-backend.js';
-import { hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount } from './codex-accounts.js';
+import { hasAnyCodexAccount, claimCodexAccount, getFreshCodexAccount } from './codex-accounts.js';
 
 /** Request header that arms a comparison: `x-dario-compare: <model>`. */
 export const COMPARE_HEADER = 'x-dario-compare';
@@ -215,11 +215,17 @@ export async function runCompare(opts: {
 }): Promise<{ side: CompareSide | null; skipped?: string }> {
   try {
     if (!(await hasAnyCodexAccount())) return { side: null, skipped: 'no Codex account configured' };
-    const stored = await selectCodexAccount(undefined, { reserve: false });
-    if (!stored) return { side: null, skipped: 'no Codex account configured' };
+    const claim = await claimCodexAccount();
+    if (!claim) return { side: null, skipped: 'no Codex account configured' };
 
-    const creds = await getFreshCodexAccount(stored);
-    const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
+    let creds: Awaited<ReturnType<typeof getFreshCodexAccount>>;
+    let slugs: readonly string[];
+    try {
+      creds = await getFreshCodexAccount(claim.account);
+      slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
+    } finally {
+      claim.release();
+    }
     if (!isCodexModel(opts.targetModel, slugs)) {
       return { side: null, skipped: `${opts.targetModel} is not served by Codex account ${creds.alias}` };
     }

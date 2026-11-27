@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodexAccountCredentials } from './codex-accounts.js';
 import { timingHeaders } from './timing.js';
-import { forceRefreshCodexAccount, codexInFlightStart, codexInFlightEnd } from './codex-accounts.js';
+import { forceRefreshCodexAccount, codexInFlightStart, codexInFlightEnd, noteCodexResponseOwner } from './codex-accounts.js';
 import {
   anthropicToResponsesRequest,
   anthropicUsageFromResponses,
@@ -1301,8 +1301,9 @@ async function forwardResponsesToCodexUntracked(
         for (const f of frames) {
           const line = f.split('\n').find((l) => l.startsWith('data:'));
           if (!line) continue;
-          let ev: { type?: string; response?: { usage?: unknown } };
+          let ev: { type?: string; response?: { id?: unknown; usage?: unknown } };
           try { ev = JSON.parse(line.slice(5)) as typeof ev; } catch { continue; }
+          if (typeof ev.response?.id === 'string') noteCodexResponseOwner(ev.response.id, creds.alias);
           if (!isTerminalResponsesEvent(ev.type ?? '')) continue;
           terminal = true;
           usage = splitResponsesUsage(ev.response?.usage) ?? usage;
