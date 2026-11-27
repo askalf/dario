@@ -91,7 +91,7 @@ jobs:
           echo "author=$author" >> "$GITHUB_OUTPUT"
           echo "testing $REPO#$PR @$sha by $author"
 
-      - uses: askalf/ci/actions/checkout-with-retry@f866115022bb2a95e533d49345a5042485600951 # main 2026-11-26, askalf/ci#243
+      - uses: askalf/ci/actions/checkout-with-retry@e3eb0e4ecf10533e53ea11d07aa1c90bc8a60888 # main 2026-11-27, askalf/ci#250
         with:
           ref: ${{ steps.pr.outputs.sha }}
 
