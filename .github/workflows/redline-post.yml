@@ -18,9 +18,9 @@ permissions:
 
 jobs:
   post:
-    uses: askalf/ci/.github/workflows/redline-post-verdict.yml@f866115022bb2a95e533d49345a5042485600951 # main 2026-11-26, askalf/ci#243
+    uses: askalf/ci/.github/workflows/redline-post-verdict.yml@e3eb0e4ecf10533e53ea11d07aa1c90bc8a60888 # main 2026-11-27, askalf/ci#250
     with:
-      redline-ref: f866115022bb2a95e533d49345a5042485600951
+      redline-ref: e3eb0e4ecf10533e53ea11d07aa1c90bc8a60888
       second-reviewer-login: sprayberry-secondread
     secrets:
       reviewer-token: ${{ secrets.REDLINE_REVIEWER_TOKEN }}
