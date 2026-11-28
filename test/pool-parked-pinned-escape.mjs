@@ -109,7 +109,7 @@ async function scenario(guard) {
       : {};
   await startProxy({
     host: '127.0.0.1', port: PORT, passthrough: false, verbose: false,
-    noLiveCapture: true, fetchImpl, ...guardOpts,
+    noLiveCapture: true, fetchImpl, overageGuardNotifyOs: false, ...guardOpts,
   });
   const BASE = `http://127.0.0.1:${PORT}`;
   for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
