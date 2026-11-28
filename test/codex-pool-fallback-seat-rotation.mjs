@@ -229,6 +229,16 @@ header('a fully-cooled pool stops spending upstream requests');
     `saw ${state.seen.join(',')}`);
 }
 
+// ---------------------------------------------------------------------------
+header('no seat is left held or in flight once the requests are done');
+// ---------------------------------------------------------------------------
+{
+  const { codexInFlightFor } = await import('../dist/codex-accounts.js');
+  const busy = () => ['alpha', 'bravo'].map((a) => codexInFlightFor(a));
+  for (let i = 0; i < 20 && busy().some((n) => n > 0); i++) await new Promise((r) => setTimeout(r, 50));
+  check('every pick was released or forwarded', busy().every((n) => n === 0), busy().join(','));
+}
+
 codexStub.close();
 server?.close?.();
 console.log(`\n${pass} pass, ${fail} fail`);

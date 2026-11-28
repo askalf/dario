@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodexAccountCredentials } from './codex-accounts.js';
 import { timingHeaders } from './timing.js';
-import { forceRefreshCodexAccount } from './codex-accounts.js';
+import { forceRefreshCodexAccount, codexInFlightStart, codexInFlightEnd, noteCodexResponseOwner } from './codex-accounts.js';
 import {
   anthropicToResponsesRequest,
   anthropicUsageFromResponses,
@@ -1142,7 +1142,7 @@ export async function refreshAfterCodexAuthFailure(
   }
 }
 
-export async function forwardResponsesToCodex(
+async function forwardResponsesToCodexUntracked(
   res: ServerResponse,
   body: Record<string, unknown>,
   creds: CodexAccountCredentials,
@@ -1301,8 +1301,9 @@ export async function forwardResponsesToCodex(
         for (const f of frames) {
           const line = f.split('\n').find((l) => l.startsWith('data:'));
           if (!line) continue;
-          let ev: { type?: string; response?: { usage?: unknown } };
+          let ev: { type?: string; response?: { id?: unknown; usage?: unknown } };
           try { ev = JSON.parse(line.slice(5)) as typeof ev; } catch { continue; }
+          if (typeof ev.response?.id === 'string') noteCodexResponseOwner(ev.response.id, creds.alias);
           if (!isTerminalResponsesEvent(ev.type ?? '')) continue;
           terminal = true;
           usage = splitResponsesUsage(ev.response?.usage) ?? usage;
@@ -1365,7 +1366,7 @@ export async function forwardResponsesToCodex(
  * testable without network (test/codex-backend.mjs), matching the pattern
  * test/codex-oauth.mjs already uses.
  */
-export async function forwardToCodex(
+async function forwardToCodexUntracked(
   req: IncomingMessage,
   res: ServerResponse,
   body: Buffer,
@@ -1797,4 +1798,25 @@ export async function forwardToCodex(
     timeout.clear();
     res.removeListener('close', onClientClose);
   }
+}
+
+async function withCodexSeatInFlight<T>(alias: string, run: () => Promise<T>): Promise<T> {
+  codexInFlightStart(alias);
+  try {
+    return await run();
+  } finally {
+    codexInFlightEnd(alias);
+  }
+}
+
+export async function forwardResponsesToCodex(
+  ...args: Parameters<typeof forwardResponsesToCodexUntracked>
+): Promise<boolean> {
+  return withCodexSeatInFlight(args[2].alias, () => forwardResponsesToCodexUntracked(...args));
+}
+
+export async function forwardToCodex(
+  ...args: Parameters<typeof forwardToCodexUntracked>
+): Promise<boolean> {
+  return withCodexSeatInFlight(args[3].alias, () => forwardToCodexUntracked(...args));
 }

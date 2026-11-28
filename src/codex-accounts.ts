@@ -610,6 +610,118 @@ export function orderCodexSeats<T extends { alias: string }>(
 }
 let codexCooldowns = new ProviderCooldowns();
 
+const codexInFlight = new Map<string, number>();
+const codexHolds = new Map<string, Map<number, number>>();
+let lastCodexHoldToken = 0;
+const CODEX_HOLD_MS = 15_000;
+const DEFAULT_CODEX_MAX_INFLIGHT_PER_SEAT = 4;
+
+function codexMaxInFlightPerSeat(): number {
+  const parsed = Number.parseInt(process.env['DARIO_CODEX_MAX_INFLIGHT_PER_SEAT'] ?? '', 10);
+  return parsed > 0 ? parsed : DEFAULT_CODEX_MAX_INFLIGHT_PER_SEAT;
+}
+
+function liveCodexHoldCount(alias: string, now: number = Date.now()): number {
+  const holds = codexHolds.get(alias);
+  if (!holds) return 0;
+  for (const [token, expiresAt] of holds) if (expiresAt <= now) holds.delete(token);
+  if (holds.size === 0) codexHolds.delete(alias);
+  return holds.size;
+}
+
+export interface CodexSeatClaim {
+  readonly account: CodexAccountCredentials;
+  release(): void;
+}
+
+export function claimCodexSeat(account: CodexAccountCredentials): CodexSeatClaim {
+  const token = ++lastCodexHoldToken;
+  const holds = codexHolds.get(account.alias) ?? new Map<number, number>();
+  holds.set(token, Date.now() + CODEX_HOLD_MS);
+  codexHolds.set(account.alias, holds);
+  return {
+    account,
+    release: () => {
+      const live = codexHolds.get(account.alias);
+      if (!live) return;
+      live.delete(token);
+      if (live.size === 0) codexHolds.delete(account.alias);
+    },
+  };
+}
+
+function unheldCodexSeat(account: CodexAccountCredentials): CodexSeatClaim {
+  return { account, release: () => {} };
+}
+
+export function codexInFlightStart(alias: string): void {
+  codexInFlight.set(alias, (codexInFlight.get(alias) ?? 0) + 1);
+}
+
+export function codexInFlightEnd(alias: string): void {
+  const next = (codexInFlight.get(alias) ?? 0) - 1;
+  if (next > 0) codexInFlight.set(alias, next);
+  else codexInFlight.delete(alias);
+}
+
+export function codexInFlightFor(alias: string): number {
+  return (codexInFlight.get(alias) ?? 0) + liveCodexHoldCount(alias);
+}
+
+export type CodexModelFit = 'exact' | 'base' | 'none';
+
+export interface CodexPickOptions {
+  stickyKey?: string | null;
+  modelFit?: (alias: string) => CodexModelFit | undefined;
+  byLoad?: boolean;
+}
+
+function seatsThatFitModel<T extends { alias: string }>(
+  ordered: readonly T[],
+  modelFit?: (alias: string) => CodexModelFit | undefined,
+): T[] {
+  if (!modelFit) return [...ordered];
+  const fits = ordered.map((seat) => ({ seat, fit: modelFit(seat.alias) }));
+  const best = fits.some((f) => f.fit === 'exact') ? 'exact' : fits.some((f) => f.fit === 'base') ? 'base' : null;
+  if (!best) return [...ordered];
+  return fits.filter((f) => f.fit === undefined || f.fit === best).map((f) => f.seat);
+}
+
+function roomiestCodexSeats<T extends { alias: string }>(eligible: readonly T[]): T[] {
+  const now = Date.now();
+  const { floor } = currentCodexRouting();
+  const aboveFloor = eligible.filter((seat) => (codexHeadroom(seat.alias, now) ?? 1) > floor);
+  return aboveFloor.length > 0 ? aboveFloor : eligible.slice(0, 1);
+}
+
+function leastBusyCodexSeat<T extends { alias: string }>(seats: readonly T[]): T | null {
+  let best: T | null = null;
+  let bestLoad = Number.POSITIVE_INFINITY;
+  for (const seat of seats) {
+    const load = codexInFlightFor(seat.alias);
+    if (load < bestLoad) {
+      best = seat;
+      bestLoad = load;
+    }
+  }
+  return best;
+}
+
+const codexResponseOwners = new Map<string, string>();
+const CODEX_RESPONSE_OWNERS_MAX = 2_000;
+
+export function noteCodexResponseOwner(responseId: string, alias: string): void {
+  if (codexResponseOwners.size >= CODEX_RESPONSE_OWNERS_MAX && !codexResponseOwners.has(responseId)) {
+    const oldest = codexResponseOwners.keys().next().value;
+    if (oldest !== undefined) codexResponseOwners.delete(oldest);
+  }
+  codexResponseOwners.set(responseId, alias);
+}
+
+export function codexResponseOwner(responseId: string): string | null {
+  return codexResponseOwners.get(responseId) ?? null;
+}
+
 /** conversation sticky key -> alias. Bounded; swept when it exceeds the cap. */
 const codexSticky = new Map<string, string>();
 const CODEX_STICKY_MAX = 500;
@@ -632,6 +744,9 @@ export function codexCooldownRemainingMs(alias: string): number {
 /** Test seam — forget every cool-down and binding. */
 export function _resetCodexPoolForTest(): void {
   codexSticky.clear();
+  codexInFlight.clear();
+  codexHolds.clear();
+  codexResponseOwners.clear();
   // A fresh instance rather than clearing per alias: the previous version
   // emptied the sticky map first and then iterated it, so it cleared nothing
   // and cool-downs leaked between test cases.
@@ -655,63 +770,97 @@ function bindCodexSticky(key: string, alias: string): void {
 }
 
 /**
- * Move a conversation onto `alias`, the codex mirror of pool.rebindSticky.
+ * Move a conversation from the seat that just declined onto `to`, the codex
+ * mirror of pool.rebindSticky.
  *
- * Selection binds a conversation to the seat it picked; mid-request failover
- * then moves it, and without this the binding still names the seat that just
- * declined — the next turn would read a stale binding, find it cooling, and
- * re-pick from scratch. A null key is accepted so the caller does not have to
- * guard: a request with no hashable first user message has no conversation to
- * bind.
+ * Mid-request failover moves the request; the binding follows only when it
+ * still names the seat that declined. A turn that overflowed off its bound
+ * seat leaves the binding where it was, so a decline on the overflow seat does
+ * not carry the conversation away from a seat that never declined. A null key
+ * is accepted so the caller does not have to guard: a request with no
+ * hashable first user message has no conversation to bind.
  */
-export function rebindCodexSticky(key: string | null | undefined, alias: string): void {
-  if (!key) return;
-  bindCodexSticky(key, alias);
+export function rebindCodexSticky(key: string | null | undefined, from: string, to: string): void {
+  if (!key || codexSticky.get(key) !== from) return;
+  bindCodexSticky(key, to);
 }
 
 /**
  * Choose a ChatGPT seat for this request.
  *
  * Order, most specific first:
- *   1. an explicitly named alias (`x-dario-account`, DARIO_CODEX_ACCOUNT) — a
- *      pin is an instruction, so it is honoured even while cooling; the caller
- *      asked for that seat and gets its answer, 429 included.
- *   2. the seat this conversation is already bound to, unless it is cooling.
- *   3. the first seat that is not cooling, in orderCodexSeats' order (the pool
- *      strategy over each seat's utilisation; alphabetical when there are no
- *      readings, so a fresh process is deterministic).
+ *   1. an explicitly named alias (`x-dario-account`, DARIO_CODEX_ACCOUNT, the
+ *      account that issued a referenced Responses response): a pin is an
+ *      instruction, so it is honoured even while cooling; the caller asked for
+ *      that seat and gets its answer, 429 included.
+ *   2. the seat this conversation is already bound to, unless it is cooling,
+ *      cannot serve the model, or already has DARIO_CODEX_MAX_INFLIGHT_PER_SEAT
+ *      requests in flight or picked and not yet forwarded. At that cap the
+ *      turn goes elsewhere and the binding stays put.
+ *   3. among seats that are not cooling and can serve the model (an exact
+ *      slug match beats one that needs an effort suffix read off, and a seat
+ *      whose catalog is unread stays a candidate; a model no seat is known to
+ *      list filters nothing), the least busy one above
+ *      the headroom floor; orderCodexSeats' order breaks ties, and below the
+ *      floor only the roomiest such seat is used. `byLoad: false` drops the
+ *      load test and takes the first such seat in that order.
  *   4. null when every seat is cooling. The caller answers from that rather
  *      than spending a request that can only 429 again.
+ *
+ * claimCodexAccount returns the same pick, already counted as busy for this
+ * request until it calls release, right before forwarding or when it decides
+ * not to forward.
  */
 export async function selectCodexAccount(
   preferredAlias?: string,
-  opts?: { stickyKey?: string | null },
+  opts?: CodexPickOptions,
 ): Promise<CodexAccountCredentials | null> {
+  return (await pickCodexAccount(preferredAlias, opts, false))?.account ?? null;
+}
+
+export async function claimCodexAccount(
+  preferredAlias?: string,
+  opts?: CodexPickOptions,
+): Promise<CodexSeatClaim | null> {
+  return pickCodexAccount(preferredAlias, opts, true);
+}
+
+async function pickCodexAccount(
+  preferredAlias: string | undefined,
+  opts: CodexPickOptions | undefined,
+  hold: boolean,
+): Promise<CodexSeatClaim | null> {
+  const claim = hold ? claimCodexSeat : unheldCodexSeat;
   const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
   if (alias) {
     const one = await loadCodexAccount(alias);
-    if (one) return one;
+    if (one) return claim(one);
   }
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
-  const byAlias = [...all].sort((a, b) => a.alias.localeCompare(b.alias));
+  const byLoad = opts?.byLoad ?? true;
+  const eligible = seatsThatFitModel(
+    orderCodexSeats(all).filter((c) => !codexCooldowns.isCooled(c.alias)),
+    opts?.modelFit,
+  );
 
   const key = opts?.stickyKey ?? null;
+  let boundSeatAtCap = false;
   if (key) {
     const bound = codexSticky.get(key);
-    if (bound && !codexCooldowns.isCooled(bound)) {
-      const hit = byAlias.find((c) => c.alias === bound);
-      // A binding to a seat that has since been removed falls through to a
-      // fresh pick rather than failing the request.
-      if (hit) return hit;
-      codexSticky.delete(key);
+    if (bound && !all.some((c) => c.alias === bound)) codexSticky.delete(key);
+    const hit = eligible.find((c) => c.alias === bound);
+    if (hit) {
+      if (byLoad && codexInFlightFor(hit.alias) >= codexMaxInFlightPerSeat()) boundSeatAtCap = true;
+      else return claim(hit);
     }
   }
 
-  const free = orderCodexSeats(byAlias).find((c) => !codexCooldowns.isCooled(c.alias));
+  const roomy = roomiestCodexSeats(eligible);
+  const free = byLoad ? leastBusyCodexSeat(roomy) : roomy[0] ?? null;
   if (!free) return null;
-  if (key) bindCodexSticky(key, free.alias);
-  return free;
+  if (key && !boundSeatAtCap) bindCodexSticky(key, free.alias);
+  return claim(free);
 }
 
 /**
@@ -741,19 +890,45 @@ export async function soonestCodexSeat(): Promise<CodexAccountCredentials | null
  * inside the same request even if its cool-down has not landed yet. That is
  * the codex mirror of the Claude pool's selectExcluding, and it is what makes
  * the loop terminate: every pass adds a seat, so it is bounded by pool size.
+ * `accepts` drops seats that cannot take this request, such as a seat whose
+ * catalog is known to lack the model. Among the rest the least busy seat above
+ * the headroom floor wins, as for a new conversation.
  *
  * Stickiness is deliberately NOT consulted. The bound seat is the one that
  * just declined; re-offering it would loop, and a conversation whose seat has
  * gone away is better served elsewhere than not at all.
+ *
+ * claimCodexAccountExcluding returns the same pick, held for this request.
  */
 export async function selectCodexAccountExcluding(
   tried: ReadonlySet<string>,
+  opts?: { accepts?: (alias: string) => boolean },
 ): Promise<CodexAccountCredentials | null> {
+  return (await pickCodexAccountExcluding(tried, opts, false))?.account ?? null;
+}
+
+export async function claimCodexAccountExcluding(
+  tried: ReadonlySet<string>,
+  opts?: { accepts?: (alias: string) => boolean },
+): Promise<CodexSeatClaim | null> {
+  return pickCodexAccountExcluding(tried, opts, true);
+}
+
+async function pickCodexAccountExcluding(
+  tried: ReadonlySet<string>,
+  opts: { accepts?: (alias: string) => boolean } | undefined,
+  hold: boolean,
+): Promise<CodexSeatClaim | null> {
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
-  return orderCodexSeats(all)
-    .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
+  const accepts = opts?.accepts ?? (() => true);
+  const free = leastBusyCodexSeat(roomiestCodexSeats(
+    orderCodexSeats(all).filter((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias) && accepts(c.alias)),
+  ));
+  if (!free) return null;
+  return hold ? claimCodexSeat(free) : unheldCodexSeat(free);
 }
+
 /** Every seat is cooling — the fail-fast condition, for the caller's message. */
 /**
  * Are ALL of these aliases cooling, right now?

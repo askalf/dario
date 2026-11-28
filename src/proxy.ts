@@ -56,7 +56,7 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel, type ClaudeTarget } from './claude-model.js';
 import { MODEL_UNROUTABLE, DESKTOP_GATEWAY_ON_PLAN, DESKTOP_GATEWAY_ON_PLAN_MESSAGE } from './upstream-rejection.js';
 import { compareKeepMs, pruneCompareRecords, readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, claimCodexAccount, claimCodexAccountExcluding, claimCodexSeat, codexResponseOwner, type CodexModelFit, type CodexSeatClaim, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
   setCodexRouting,
 } from './codex-accounts.js';
@@ -224,6 +224,17 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
  * fallback and the mid-stream continuation target), and to name the
  * conversation in a report where routing bound no key.
  */
+function codexModelFit(model: string | null | undefined, slugs: readonly string[] | null): CodexModelFit | undefined {
+  if (!model || !slugs) return undefined;
+  if (isCodexModel(model, slugs)) return 'exact';
+  const { model: base, effort } = parseEffortSuffix(model);
+  return effort && isCodexModel(base, slugs) ? 'base' : 'none';
+}
+
+function codexFitRank(fit: CodexModelFit | undefined): number {
+  return fit === 'exact' ? 2 : fit === 'base' ? 1 : 0;
+}
+
 function codexStickyKeyForBody(body: Buffer): string | null {
   try {
     const parsed = JSON.parse(body.toString('utf-8')) as unknown;
@@ -3235,12 +3246,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // that reaches the subscription twice lands on the same seat both times,
     // so the second turn reads the prefix the first one paid to create.
     const stickyKey = codexStickyKeyForBody(body);
-    const stored = await selectCodexAccount(undefined, { stickyKey }).catch(() => null);
-    if (!stored) return false;
+    // A seat whose catalog is known to list none of the fallback models cannot
+    // serve this hop; one whose catalog is unread is still worth a try.
+    const listsAFallbackModel = (alias: string): boolean => {
+      const slugs = peekCodexModelSlugs(alias);
+      return !slugs || pickCodexFallback(fallbackModels, slugs) !== null;
+    };
+    let claim = await claimCodexAccount(undefined, {
+      stickyKey,
+      modelFit: (alias) => {
+        const slugs = peekCodexModelSlugs(alias);
+        if (!slugs) return undefined;
+        return pickCodexFallback(fallbackModels, slugs) ? 'exact' : 'none';
+      },
+    }).catch(() => null);
+    if (!claim) return false;
+    const releaseClaim = (): void => claim?.release();
     let seat: CodexAccountCredentials | null;
     try {
-      seat = await getFreshCodexAccount(stored);
+      seat = await getFreshCodexAccount(claim.account);
     } catch {
+      releaseClaim();
       return false;
     }
 
@@ -3254,24 +3280,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const hasNextOption = (openaiBackend !== null && shape === 'openai')
       || (creditsApiKey.length > 0 && creditsEntries(fallbackModels).length > 0);
 
-    // The next seat that could serve one of these fallback models, excluding
-    // everything already tried. `peek` is the cached read, so the scan costs no
-    // upstream call; a seat whose model list is unknown is still worth a try.
-    //
-    // Scans rather than testing one candidate: with mixed model availability
-    // across seats, the alphabetically-next peer may be the one that lists none
-    // of the fallback models while a later one lists one.
-    const nextFallbackPeer = async (tried: ReadonlySet<string>): Promise<CodexAccountCredentials | null> => {
-      const skipped = new Set(tried);
-      for (;;) {
-        const candidate = await selectCodexAccountExcluding(skipped).catch(() => null);
-        if (!candidate) return null;
-        const peerSlugs = peekCodexModelSlugs(candidate.alias);
-        if (!peerSlugs || pickCodexFallback(fallbackModels, peerSlugs)) return candidate;
-        skipped.add(candidate.alias);
-      }
-    };
-
     // Mid-flight seat failover on the CLAUDE-TO-CODEX route, the same as the
     // primary Codex route has. Without it this route selected one seat and
     // stopped: a 429 from that seat was written to the client while a healthy
@@ -3280,27 +3288,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // pickCodexFallback reads that SEAT's slugs — peers need not list the same
     // model, and the one that answers may answer as a different one.
     //
-    // Terminates by construction: every pass adds a seat to `tried`, and
-    // nextFallbackPeer never returns one already in it.
+    // A peer is only looked for before the attempt, to know whether a decline
+    // can be retried; the seat that takes the retry is picked after the
+    // decline, so a burst of declines spreads over the peers idle by then.
+    // Each replacement is held for this request while its credentials and
+    // catalog load, and the seat it replaces is let go first.
+    //
+    // Terminates by construction: every pass adds a seat to `tried`, and the
+    // peer pickers never return one already in it.
     const tried = new Set<string>();
     let served = false;
     while (seat) {
       tried.add(seat.alias);
       const slugs = await getCodexModelSlugs(seat).catch(() => [] as string[]);
       const fallbackPick = pickCodexFallback(fallbackModels, slugs);
-      // Resolved BEFORE the attempt: it decides whether this attempt may defer,
-      // and becomes the seat to retry on if it declines.
-      const peer = await nextFallbackPeer(tried);
       if (!fallbackPick) {
         // This seat lists none of the fallback models. That used to end the
         // attempt outright; a peer may still list one.
-        if (!peer) return false;
-        seat = await getFreshCodexAccount(peer).catch(() => peer);
+        releaseClaim();
+        claim = await claimCodexAccountExcluding(tried, { accepts: listsAFallbackModel }).catch(() => null);
+        if (!claim) return false;
+        const replacement = claim.account;
+        seat = await getFreshCodexAccount(replacement).catch(() => replacement);
         continue;
       }
+      const standbyPeer = await selectCodexAccountExcluding(tried, { accepts: listsAFallbackModel }).catch(() => null);
       const fallbackModel = fallbackPick.model;
       const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
-      if (!fallbackBody) return false;
+      if (!fallbackBody) {
+        releaseClaim();
+        return false;
+      }
       const reqNo = requestCount;
       console.log(`[dario] #${reqNo} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
       requestCount++;
@@ -3308,10 +3326,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // the guards above would tell the rest of the request that codex had been
       // tried when it had not, suppressing a later legitimate attempt.
       attempted.add('codex');
+      releaseClaim();
       served = await forwardToCodex(
         req, res, fallbackBody, seat, corsOrigin,
         { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-        upstreamTimeoutMs, verbose, shape, fetch, hasNextOption || peer !== null,
+        upstreamTimeoutMs, verbose, shape, fetch, hasNextOption || standbyPeer !== null,
         // The row files under the model the seat served as; the substituted
         // one when the seat named none. The client's own model is the Claude
         // one, which this request never reached.
@@ -3325,14 +3344,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         undefined,
         timing,
       );
-      if (served || !peer) break;
+      if (served || !standbyPeer) break;
+      claim = (await claimCodexAccountExcluding(tried, { accepts: listsAFallbackModel }).catch(() => null))
+        ?? claimCodexSeat(standbyPeer);
+      const peer = claim.account;
       console.log(`[dario] codex seat ${seat.alias} declined — retrying this fallback on ${peer.alias}`);
-      // The conversation follows the request. Its binding still names the seat
-      // that just declined; leaving it there would send the next turn back to a
-      // cooling seat and re-pick from scratch.
-      rebindCodexSticky(stickyKey, peer.alias);
+      rebindCodexSticky(stickyKey, seat.alias, peer.alias);
       seat = await getFreshCodexAccount(peer).catch(() => peer);
     }
+    releaseClaim();
     if (served) {
       providerCooldowns.clear('codex');
     }
@@ -4115,7 +4135,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // throws, so /v1/models keeps its "always answers" property.
       let codexNames: string[] = [];
       if (await hasAnyCodexAccount()) {
-        const stored = await selectCodexAccount();
+        const stored = await selectCodexAccount(undefined, { byLoad: false });
         if (stored) {
           const creds = await getFreshCodexAccount(stored).catch(() => stored);
           codexNames = (await getCodexModelSlugs(creds))
@@ -4718,7 +4738,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // The CLIENT's bytes rather than the rewritten `body`: a resume is the
         // same conversation as the request that died mid-stream, so it must
         // hash to the same key and land on the seat that conversation holds.
-        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes) }).catch(() => null);
+        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes), byLoad: false }).catch(() => null);
         if (!stored) return null;
         let creds: CodexAccountCredentials;
         try { creds = await getFreshCodexAccount(stored); } catch { return null; }
@@ -5129,24 +5149,67 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // `parsedBody` is the object the invalid-body guard already parsed,
           // so this costs no second JSON.parse.
           const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
+          const previousResponseId = isResponses && typeof responsesBodyRaw?.['previous_response_id'] === 'string'
+            ? responsesBodyRaw['previous_response_id'] as string
+            : null;
+          const codexResponseIssuer = previousResponseId ? codexResponseOwner(previousResponseId) : null;
+          let codexClaim: CodexSeatClaim | null = null;
+          const releaseHeldCodexSeat = (): void => codexClaim?.release();
           if (await hasAnyCodexAccount()) {
             // With every seat cooling there is no free seat, but the request is
             // still the subscription's: routed on the seat that recovers first,
             // the codex branch below defers it or answers 429 with a retry-after.
-            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey }) ?? await soonestCodexSeat();
-            if (stored) {
+            const requestedModel = rawModel;
+            const codexPick = {
+              stickyKey: codexStickyKey,
+              modelFit: (alias: string) => codexModelFit(requestedModel, peekCodexModelSlugs(alias)),
+            };
+            codexClaim = await claimCodexAccount(codexResponseIssuer ?? undefined, codexPick);
+            let stored = codexClaim?.account ?? await soonestCodexSeat();
+            let loadedSeat: { claim: CodexSeatClaim; creds: CodexAccountCredentials; models: readonly string[] } | null = null;
+            while (stored) {
+              const catalogWasUnread = peekCodexModelSlugs(stored.alias) === null;
               try {
                 codexCreds = await getFreshCodexAccount(stored);
                 codexModels = await getCodexModelSlugs(codexCreds);
               } catch (err) {
-                if (!(err instanceof CodexCredentialsUnavailableError)) throw err;
+                if (!(err instanceof CodexCredentialsUnavailableError)) {
+                  releaseHeldCodexSeat();
+                  loadedSeat?.claim.release();
+                  throw err;
+                }
+                if (loadedSeat) {
+                  releaseHeldCodexSeat();
+                  rebindCodexSticky(codexStickyKey, stored.alias, loadedSeat.claim.account.alias);
+                  codexClaim = loadedSeat.claim;
+                  codexCreds = loadedSeat.creds;
+                  codexModels = loadedSeat.models;
+                  break;
+                }
                 codexUnavailable = err;
                 // Cached slugs only — never an upstream call with a credential
                 // already known to be bad. Enough to answer the routing
                 // question "was this request the subscription's to serve".
                 codexModels = peekCodexModelSlugs(stored.alias) ?? [];
+                break;
               }
+              if (!codexClaim || codexResponseIssuer || !requestedModel || !catalogWasUnread) break;
+              const fitHere = codexFitRank(codexPick.modelFit(stored.alias));
+              const storedAlias = stored.alias;
+              const aliases = await listCodexAccountAliases().catch(() => [] as string[]);
+              if (!aliases.some((a) => a !== storedAlias && codexFitRank(codexPick.modelFit(a)) > fitHere)) break;
+              const repick = await claimCodexAccount(undefined, codexPick);
+              if (!repick || repick.account.alias === stored.alias) {
+                repick?.release();
+                break;
+              }
+              loadedSeat?.claim.release();
+              loadedSeat = { claim: codexClaim, creds: codexCreds, models: codexModels };
+              codexClaim = repick;
+              stored = repick.account;
+              codexCreds = null;
             }
+            if (loadedSeat && loadedSeat.claim !== codexClaim) loadedSeat.claim.release();
           }
           // dario#1260 — an effort suffix on a CODEX model (`gpt-5.6-terra:high`).
           // The two strip sites further up deliberately leave OpenAI-shaped names
@@ -5194,6 +5257,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
+          if (!(rawModel && codexCreds && decision.provider === 'codex')) releaseHeldCodexSeat();
           // A pin names a Claude POOL seat, so it is only meaningful for a request
           // this proxy would dispatch through that pool. Provider routing happens
           // here, BEFORE selectPoolAccount(), so a pinned request naming a Codex or
@@ -5201,6 +5265,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // the wrong thing healthy — the same silent-wrong-leg outcome as the
           // api-key case above. Refuse it instead.
           if (pinnedAccount && decision.provider !== 'claude') {
+            releaseHeldCodexSeat();
             requestCount++;
             res.writeHead(409, JSON_HEADERS);
             res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} names a Claude pool seat, but this request routes to ${decision.provider}; drop the header or ask for a Claude model` } }));
@@ -5242,6 +5307,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (!codexAvailable && !canDefer) {
               // Nothing else in the chain can pick this up, so an attempt could
               // only rediscover the limit. One verdict, no upstream request.
+              releaseHeldCodexSeat();
               writeAllProvidersRateLimited(['codex']);
               return;
             }
@@ -5295,39 +5361,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // that, a decline with no Claude fallback configured writes the 429 to the
             // client and returns true, and there is nothing left to retry onto.
             //
+            // A peer is only looked for before the attempt, to know whether a
+            // decline can be retried. The seat that takes the retry is picked
+            // after the decline, so a burst of requests declined by one seat
+            // spreads over the peers that are idle by then instead of all
+            // landing on the one that looked idle before they started. A
+            // Responses follow-up stays on the account that issued the response
+            // it names, so it gets no peer.
+            //
             // Terminates by construction: every pass adds a seat to `codexTried`, and
-            // selectCodexAccountExcluding never returns a seat already in it.
+            // the peer pickers never return a seat already in it.
             let served = false;
             if (codexAvailable) {
               const codexTried = new Set<string>();
               let codexSeat: CodexAccountCredentials | null = codexCreds;
+              // A peer that demonstrably does not list this model cannot serve it;
+              // trying it would trade a 429 for a 400. peek is the cached read, so
+              // this never costs an upstream call; an unknown list still gets a try.
+              const peerListsModel = (alias: string): boolean => {
+                const peerSlugs = rawModel ? peekCodexModelSlugs(alias) : null;
+                return !peerSlugs || isCodexModel(rawModel!, peerSlugs);
+              };
               while (codexSeat) {
                 codexTried.add(codexSeat.alias);
-                // Resolved BEFORE the attempt: it decides whether this attempt may
-                // defer, and becomes the seat to retry on if it declines.
-                // A peer that demonstrably does not list this model cannot serve it;
-                // trying it would trade a 429 for a 400. peek is the cached read, so
-                // this never costs an upstream call — an unknown list still gets a try.
-                //
-                // Scanning rather than testing one candidate: with mixed model
-                // availability across seats, the alphabetically-next peer may be the
-                // one that cannot serve this model while a later one can. Stopping at
-                // the first incompatible candidate left `codexPeer` null and abandoned
-                // a usable seat — with no Claude fallback the declining seat's 429 went
-                // straight to the client (caught in review of #1288). `peerTried` is
-                // seeded from `codexTried` and grows every pass, so this terminates.
-                let codexPeer: CodexAccountCredentials | null = null;
-                const peerTried = new Set(codexTried);
-                for (;;) {
-                  const candidate = await selectCodexAccountExcluding(peerTried).catch(() => null);
-                  if (!candidate) break;
-                  const peerSlugs = rawModel ? peekCodexModelSlugs(candidate.alias) : null;
-                  if (!peerSlugs || isCodexModel(rawModel!, peerSlugs)) {
-                    codexPeer = candidate;
-                    break;
-                  }
-                  peerTried.add(candidate.alias);
-                }
+                const standbyPeer = codexResponseIssuer
+                  ? null
+                  : await selectCodexAccountExcluding(codexTried, { accepts: peerListsModel }).catch(() => null);
+                releaseHeldCodexSeat();
                 // A Responses client on a ChatGPT-subscription model: the backend speaks
                 // that shape natively, so the body goes through as written (model
                 // resolved) and the SSE comes back untouched — no round trip through the
@@ -5348,14 +5408,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     rawRes, withResponsesEffort({ ...responsesBodyRaw, model: rawModel }, effortForCodex(requestEffort ?? keyDefaultEffort)),
                     codexSeat, corsOrigin, SECURITY_HEADERS,
                     upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
-                    codexOnDecline, canDefer || codexPeer !== null,
+                    codexOnDecline, canDefer || standbyPeer !== null,
                     { queueMs, arrivedAt },
                   );
                 } else {
                   served = await forwardToCodex(
                     req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
                     upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-                    codexFetch, canDefer || codexPeer !== null,
+                    codexFetch, canDefer || standbyPeer !== null,
                     codexOnDone,
                     codexOnDecline,
                     // dario#1260 — the effort named by the model-name suffix stripped
@@ -5367,15 +5427,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     { queueMs, arrivedAt },
                   );
                 }
-                if (served || !codexPeer) break;
+                if (served || !standbyPeer) break;
+                codexClaim = (await claimCodexAccountExcluding(codexTried, { accepts: peerListsModel }).catch(() => null))
+                  ?? claimCodexSeat(standbyPeer);
+                const codexPeer = codexClaim.account;
                 console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
-                // The conversation follows the request. Its binding still names
-                // the seat that just declined; leaving it there would send the
-                // next turn back to a cooling seat and re-pick from scratch.
-                rebindCodexSticky(codexStickyKey, codexPeer.alias);
+                // The conversation follows the request when it was bound to the
+                // seat that declined. A turn that overflowed onto that seat
+                // leaves the binding on the seat it overflowed from.
+                rebindCodexSticky(codexStickyKey, codexSeat.alias, codexPeer.alias);
                 codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
               }
             }
+            releaseHeldCodexSeat();
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');
